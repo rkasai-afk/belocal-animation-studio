@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>BeLocal Animation Studio v2 — Free-Form Editor</title>
+<style>
+/*FONT_FACES_PLACEHOLDER*/
+:root {
+  --navy:#1F3864; --teal:#0E7C7B; --green:#2E7D32; --amber:#B7791F; --red:#A33131;
+  --paper:#F4F5F7; --line:#D9DCE1; --text:#2B2D33; --text-gray:#5A5F68;
+}
+* { box-sizing: border-box; }
+body { margin:0; font-family:-apple-system,"Segoe UI",Arial,sans-serif; background:var(--paper); color:var(--text); }
+header { background:var(--navy); color:#fff; padding:18px 28px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+header h1 { margin:0; font-size:18px; }
+header p { margin:4px 0 0 0; font-size:12.5px; color:rgba(255,255,255,0.75); max-width:640px; }
+.mode-switch { display:flex; gap:4px; background:rgba(255,255,255,0.1); border-radius:8px; padding:3px; }
+.mode-switch button { background:transparent; border:none; color:rgba(255,255,255,0.75); padding:7px 14px; border-radius:6px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.mode-switch button.active { background:#fff; color:var(--navy); }
+
+.layout { display:flex; gap:20px; padding:20px; align-items:flex-start; flex-wrap:wrap; }
+.stage-col { flex: 0 0 auto; }
+#stageWrap { width:860px; max-width:90vw; border-radius:10px; overflow:hidden; box-shadow:0 4px 18px rgba(0,0,0,0.18); border:1px solid var(--line); background:#1F3864; position:relative; }
+#stageWrap canvas { display:block; }
+.transport { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; align-items:center; }
+button { font-family:inherit; font-size:13.5px; font-weight:600; padding:9px 16px; border-radius:7px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+button.primary { background:var(--teal); color:#fff; border-color:var(--teal); }
+button.record { background:var(--red); color:#fff; border-color:var(--red); }
+button.ghost { background:#fff; }
+button:disabled { opacity:0.5; cursor:not-allowed; }
+button.small { padding:5px 9px; font-size:12px; }
+.status { font-size:12.5px; color:var(--text-gray); margin-top:8px; min-height:16px; }
+.hint-strip { font-size:12px; color:var(--text-gray); margin-top:10px; max-width:860px; line-height:1.5; background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px 14px; }
+
+.panel-col { flex:1 1 360px; min-width:330px; max-width:430px; display:flex; flex-direction:column; gap:14px; }
+.card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
+.card h2 { font-size:12.5px; text-transform:uppercase; letter-spacing:0.5px; color:var(--teal); margin:0 0 10px 0; display:flex; align-items:center; justify-content:space-between; }
+.tpl-grid { display:flex; flex-wrap:wrap; gap:6px; }
+.tpl-btn { padding:7px 11px; font-size:12px; border-radius:999px; border:1px solid var(--line); background:#fff; cursor:pointer; font-weight:600; color:var(--text-gray); }
+.tpl-btn:hover { border-color:var(--teal); color:var(--teal); }
+
+.add-row { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+#layerList { display:flex; flex-direction:column; gap:4px; max-height:170px; overflow-y:auto; }
+.layer-row { display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:6px; border:1px solid transparent; font-size:12.5px; cursor:pointer; }
+.layer-row:hover { background:#F7F8FA; }
+.layer-row.active { background:#EEF6F6; border-color:var(--teal); }
+.layer-row .lname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.layer-row .ltype { font-size:10px; color:#fff; background:#8A8F98; border-radius:4px; padding:1px 5px; }
+.font-row { display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:6px; font-size:12.5px; }
+.font-row:hover { background:#F7F8FA; }
+.font-row .lname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+label { display:block; font-size:12px; font-weight:600; color:var(--text-gray); margin-top:10px; margin-bottom:4px; }
+label:first-child { margin-top:0; }
+input[type=text], input[type=number], select, textarea {
+  width:100%; padding:7px 9px; font-size:13.5px; border:1px solid var(--line); border-radius:6px; font-family:inherit;
+}
+textarea { resize:vertical; min-height:50px; }
+input[type=range] { width:100%; }
+.row2 { display:flex; gap:8px; }
+.row2 > div { flex:1; }
+.swatches { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
+.swatch { width:24px; height:24px; border-radius:6px; cursor:pointer; border:2px solid transparent; }
+.swatch.active { border-color:#333; }
+.empty-note { font-size:12.5px; color:var(--text-gray); font-style:italic; }
+.font-preset { display:block; width:100%; text-align:left; padding:8px 10px; margin-top:6px; border:1px solid var(--line); border-radius:7px; background:#fff; cursor:pointer; }
+.font-preset.active { border-color:var(--teal); background:#F2F9F9; }
+.font-preset .fp-name { font-size:11px; font-weight:700; color:var(--text-gray); text-transform:uppercase; }
+.font-preset .fp-sample { font-size:15px; color:var(--navy); }
+.divider { height:1px; background:var(--line); margin:10px 0; }
+.file-drop { border:1.5px dashed var(--line); border-radius:8px; padding:14px; text-align:center; font-size:12.5px; color:var(--text-gray); cursor:pointer; }
+.file-drop:hover { border-color:var(--teal); }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>BeLocal Animation Studio v2 — Free-Form Editor</h1>
+    <p>Drag to move, drag the corner handles to resize. Every layer — text, shapes, background media — is independently placeable. Runs entirely in your browser.</p>
+  </div>
+  <div class="mode-switch">
+    <button id="modeEdit" class="active">Edit</button>
+    <button id="modePreview">Preview</button>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="stage-col">
+    <div id="stageWrap"><canvas id="fcanvas" width="1920" height="1080"></canvas></div>
+    <div class="transport">
+      <button class="primary" id="btnPlay">▶ Preview</button>
+      <button class="record" id="btnRecord">⏺ Record &amp; Download</button>
+      <button id="btnStop" disabled>■ Stop</button>
+      <button class="ghost small" id="btnDelete" disabled>Delete layer</button>
+    </div>
+    <div class="timeline-row" style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+      <label style="margin:0; white-space:nowrap; flex:0 0 auto;">Scrub timeline</label>
+      <input type="range" id="timelineScrub" min="0" max="1000" value="0" style="flex:1;">
+      <span id="scrubTime" style="font-size:12px;color:var(--text-gray);min-width:44px;text-align:right;flex:0 0 auto;">0.0s</span>
+    </div>
+    <div class="status" id="status">Loading…</div>
+    <div class="hint-strip">
+      <strong>How this stays easy to extend:</strong> every template below is a plain JSON "scene" (a list of layers with position/size/animation). Adding a new template means writing a new JSON object, not new rendering code — ask me to add one any time and it drops straight into the Templates list. New layer types (like a future map layer) register the same way.
+    </div>
+  </div>
+
+  <div class="panel-col">
+    <div class="card">
+      <h2>Templates <span style="font-weight:400;text-transform:none;color:var(--text-gray);font-size:11px;">starter scenes — edit freely after loading</span></h2>
+      <div class="tpl-grid" id="templateGrid"></div>
+    </div>
+
+    <div class="card">
+      <h2>Typeface pairing</h2>
+      <div id="fontPresets"></div>
+    </div>
+
+    <div class="card">
+      <h2>Custom fonts <span style="font-weight:400;text-transform:none;color:var(--text-gray);font-size:11px;">.ttf / .otf / .woff / .woff2</span></h2>
+      <div class="file-drop" id="fontDrop">Click to import a font file</div>
+      <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2" style="display:none;">
+      <div id="customFontList" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Background media <span style="font-weight:400;text-transform:none;color:var(--text-gray);font-size:11px;">image or video</span></h2>
+      <div class="file-drop" id="bgDrop">Click to choose an image or video file</div>
+      <input type="file" id="bgFile" accept="image/*,video/*" style="display:none;">
+      <div id="bgControls" style="display:none;">
+        <label>Opacity / dim</label>
+        <input type="range" id="bgOpacity" min="0" max="100" value="60">
+        <button class="small" id="bgRemove" style="margin-top:8px;">Remove background</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Layers</h2>
+      <div class="add-row">
+        <button class="small" id="addText">+ Text</button>
+        <button class="small" id="addRect">+ Rectangle</button>
+        <button class="small" id="addCircle">+ Circle</button>
+      </div>
+      <div id="layerList"></div>
+    </div>
+
+    <div class="card" id="propsCard" style="display:none;">
+      <h2>Selected layer</h2>
+      <div id="propsBody"></div>
+    </div>
+
+    <div class="card">
+      <h2>Scene</h2>
+      <label>Background color (behind everything)</label>
+      <div class="swatches" id="bgColorSwatches"></div>
+      <label>Hold time at end (seconds)</label>
+      <input type="number" id="fHold" value="2" step="0.5" min="0.5">
+      <div class="divider"></div>
+      <label>Project file</label>
+      <div class="row2">
+        <button class="small" id="btnSaveProject" style="width:100%;">Save .json</button>
+        <button class="small" id="btnLoadProject" style="width:100%;">Load .json</button>
+      </div>
+      <input type="file" id="projectFile" accept="application/json" style="display:none;">
+    </div>
+  </div>
+</div>
+
+<script>/*FABRIC_JS_PLACEHOLDER*/</script>
+<script>
+/*APP_JS_PLACEHOLDER*/
+</script>
+</body>
+</html>
