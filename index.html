@@ -767,6 +767,51 @@ function T(text, opts) {
 }
 function R(opts) { return Object.assign({ kind:'rect' }, opts); }
 function C(opts) { return Object.assign({ kind:'circle' }, opts); }
+function D(opts) { return Object.assign({ kind:'dotgrid' }, opts); }
+
+/* ---- Dot-Grid Pictogram: built as one resizable "generated group" layer, not      ---- */
+/* ---- hundreds of individually-draggable dots. Total/highlight are edited via      ---- */
+/* ---- number fields in the properties panel, which regenerate the group in place.  ---- */
+function buildDotGridGroup(total, highlight, highlightColor) {
+  total = Math.max(1, Math.round(total));
+  highlight = Math.min(total, Math.max(0, Math.round(highlight)));
+  const boxW = 1400, maxH = 380;
+  let cols = Math.max(1, Math.ceil(Math.sqrt(total * (boxW / maxH))));
+  let rows = Math.ceil(total / cols);
+  let pitch = Math.min(boxW / cols, maxH / rows);
+  pitch = Math.max(10, Math.min(34, pitch));
+  const radius = pitch * 0.32;
+  const baseCount = total - highlight;
+  const dots = [];
+  for (let i = 0; i < total; i++) {
+    const row = Math.floor(i / cols), col = i % cols;
+    const isHl = i >= baseCount;
+    dots.push(new fabric.Circle({
+      left: col * pitch + pitch/2, top: row * pitch + pitch/2,
+      radius: isHl ? radius * 1.08 : radius,
+      fill: isHl ? highlightColor : 'rgba(255,255,255,0.24)',
+      originX: 'center', originY: 'center', selectable:false, evented:false,
+    }));
+  }
+  return new fabric.Group(dots, { subTargetCheck:false });
+}
+function rebuildDotGrid(obj, patch) {
+  const cfg = Object.assign({}, obj.data.dotgrid, patch);
+  cfg.highlight = Math.min(cfg.total, cfg.highlight);
+  const idx = canvas.getObjects().indexOf(obj);
+  const anim = obj.data.anim;
+  const newObj = buildDotGridGroup(cfg.total, cfg.highlight, cfg.highlightColor);
+  newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
+  newObj.set('name', obj.get('name'));
+  newObj.data = { role:null, isCounter:false, anim, dotgrid: cfg };
+  canvas.remove(obj);
+  canvas.insertAt(idx, newObj);
+  canvas.setActiveObject(newObj);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(newObj);
+  updateScrubRange();
+}
 
 const TEMPLATES = {
   blank: {
@@ -834,6 +879,82 @@ const TEMPLATES = {
       return out;
     },
   },
+  dotgrid: {
+    label: 'Dot-Grid Pictogram',
+    layers: () => [
+      T('DIET SEAT REDUCTION BILL', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:190, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+      T("Under the bill's fallback, the House would go from:", { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:250, width:1500, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+      D({ name:'Dot grid', left:960, top:420, width:1400, originX:'center', originY:'top', total:465, highlight:45, highlightColor:COLORS.amberLight, anim:{type:'fade',delay:900,duration:700} }),
+      T('465 seats today', { name:'Total label', role:'body', fontSize:26, fill:'rgba(255,255,255,0.75)', left:960, top:830, width:900, textAlign:'center', originX:'center', anim:{type:'fade',delay:2200,duration:500} }),
+      T('45 PR seats cut under the fallback', { name:'Highlight label', role:'body', fontWeight:700, fontSize:28, fill:COLORS.amberLight, left:960, top:872, width:900, textAlign:'center', originX:'center', anim:{type:'fade',delay:2350,duration:500} }),
+      T('Bill under continued Diet examination as of 16 Aug 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:930, width:1400, originX:'center', textAlign:'center', anim:{type:'fade',delay:2650,duration:600} }),
+      R({ name:'Tag pill', left:960, top:985, width:520, height:48, rx:24, ry:24, fill:COLORS.red, originX:'center', anim:{type:'pop',delay:2850,duration:500} }),
+      T('BILL ONLY — NOT ENACTED', { name:'Tag text', role:'body', fontWeight:700, fontSize:20, fill:'#FFFFFF', left:960, top:1009, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:2850,duration:500} }),
+    ],
+  },
+  compare: {
+    label: 'Before / After',
+    layers: () => {
+      const leftLines = ['Pay tax-free price at the shop', 'Show your passport at checkout'];
+      const rightLines = ['Pay full price with tax', 'Customs confirms your export', 'Shop or provider refunds you'];
+      const leftColor = COLORS.tealLight, rightColor = COLORS.amberLight;
+      const panelW = 740, gap = 140, top = 420;
+      const leftX = 960 - gap/2 - panelW, rightX = 960 + gap/2;
+      const panelH = 120 + Math.max(leftLines.length, rightLines.length) * 90 + 40;
+      const LEFT_START = 950, RIGHT_START = 1500;
+      const out = [
+        T('TAX-FREE SHOPPING, BEFORE AND AFTER', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:190, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('How the refund process changes:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:250, width:1500, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+        R({ name:'Left panel', left:leftX, top, width:panelW, height:panelH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:leftColor, strokeWidth:3, anim:{type:'pop',delay:LEFT_START,duration:550} }),
+        R({ name:'Left label pill', left:leftX+28, top:top+26, width:150, height:40, rx:20, ry:20, fill:leftColor, anim:{type:'pop',delay:LEFT_START,duration:550} }),
+        T('CURRENT', { name:'Left label text', role:'body', fontWeight:700, fontSize:18, fill:'#12213B', left:leftX+28+75, top:top+26+20, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:LEFT_START,duration:550} }),
+        R({ name:'Right panel', left:rightX, top, width:panelW, height:panelH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:rightColor, strokeWidth:3, anim:{type:'pop',delay:RIGHT_START,duration:550} }),
+        R({ name:'Right label pill', left:rightX+28, top:top+26, width:200, height:40, rx:20, ry:20, fill:rightColor, anim:{type:'pop',delay:RIGHT_START,duration:550} }),
+        T('FROM 1 NOV 2026', { name:'Right label text', role:'body', fontWeight:700, fontSize:18, fill:'#12213B', left:rightX+28+100, top:top+26+20, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START,duration:550} }),
+        R({ name:'Right flag pill', left:rightX+panelW-190, top:top+26, width:170, height:36, rx:18, ry:18, fill:'rgba(0,0,0,0.28)', stroke:rightColor, strokeWidth:2, anim:{type:'pop',delay:RIGHT_START,duration:550} }),
+        T('FUTURE RULE', { name:'Right flag text', role:'body', fontWeight:700, fontSize:18, fill:rightColor, left:rightX+panelW-190+85, top:top+26+18, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START,duration:550} }),
+        T('→', { name:'Arrow', role:'display', fontSize:60, fill:'rgba(255,255,255,0.55)', left:960, top:top+panelH/2, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START-100,duration:400} }),
+        T('National Tax Agency guidance · effective 1 November 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:top+panelH+66, width:1600, originX:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START+250+Math.max(leftLines.length,rightLines.length)*120+200,duration:500} }),
+      ];
+      leftLines.forEach((line, i) => {
+        const y = top+96+i*90, delay = LEFT_START+250+i*120;
+        out.push(C({ name:`Left bullet ${i+1}`, left:leftX+44, top:y, radius:6, fill:leftColor, originX:'center', originY:'center', anim:{type:'fade',delay,duration:400} }));
+        out.push(T(line, { name:`Left line ${i+1}`, role:'body', fontSize:24, fill:'#FFFFFF', left:leftX+44+26, top:y, width:panelW-100, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
+      });
+      rightLines.forEach((line, i) => {
+        const y = top+96+i*90, delay = RIGHT_START+250+i*120;
+        out.push(C({ name:`Right bullet ${i+1}`, left:rightX+44, top:y, radius:6, fill:rightColor, originX:'center', originY:'center', anim:{type:'fade',delay,duration:400} }));
+        out.push(T(line, { name:`Right line ${i+1}`, role:'body', fontSize:24, fill:'#FFFFFF', left:rightX+44+26, top:y, width:panelW-100, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
+      });
+      return out;
+    },
+  },
+  flow: {
+    label: 'Process Flow',
+    layers: () => {
+      const steps = ['Buy at full price', 'Customs confirms export', 'Shop or provider refunds you', 'Refund reaches your card'];
+      const n = steps.length, top = 420;
+      const boxW = Math.min(300, Math.floor((1760 - (n-1)*90) / n)), boxH = 190, gap = 90;
+      const totalW = n*boxW + (n-1)*gap, startX = 960 - totalW/2, y = top + 30;
+      const out = [
+        T('HOW THE REFUND ACTUALLY WORKS', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:190, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('One receipt moves through four steps:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:250, width:1500, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+      ];
+      steps.forEach((s, i) => {
+        const x = startX + i*(boxW+gap), delay = 1000 + i*350, color = CARD_PALETTE[i % CARD_PALETTE.length];
+        out.push(R({ name:`Step ${i+1} box`, left:x, top:y, width:boxW, height:boxH, rx:14, ry:14, fill:'rgba(255,255,255,0.07)', stroke:color, strokeWidth:2.5, anim:{type:'pop',delay,duration:500} }));
+        out.push(T('0'+(i+1), { name:`Step ${i+1} number`, role:'display', fontWeight:700, fontSize:26, fill:color, left:x+20, top:y+16, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
+        out.push(T(s, { name:`Step ${i+1} label`, role:'body', fontSize:22, fill:'#FFFFFF', left:x+boxW/2, top:y+108, width:boxW-36, originX:'center', textAlign:'center', anim:{type:'fade',delay,duration:500} }));
+        if (i > 0) {
+          const prevRight = startX + (i-1)*(boxW+gap) + boxW;
+          out.push(T('→', { name:`Arrow ${i}`, role:'display', fontSize:36, fill:'rgba(255,255,255,0.55)', left:prevRight+gap/2, top:y+boxH/2, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay-150,duration:350} }));
+        }
+      });
+      const LAST = 1000 + (n-1)*350 + 500;
+      out.push(T('National Tax Agency guidance', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:y+boxH+80, width:1600, originX:'center', textAlign:'center', anim:{type:'fade',delay:LAST+150,duration:500} }));
+      return out;
+    },
+  },
 };
 
 /* ============ LAYER CREATION FROM SPEC ============ */
@@ -860,6 +981,9 @@ function specToObject(spec) {
       fill: spec.fill || 'rgba(255,255,255,0.08)', stroke: spec.stroke || null, strokeWidth: spec.strokeWidth || 0,
       originX: spec.originX || 'left', originY: spec.originY || 'top',
     });
+  } else if (spec.kind === 'dotgrid') {
+    obj = buildDotGridGroup(spec.total, spec.highlight, spec.highlightColor);
+    obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
   }
   obj.set('name', spec.name || spec.kind);
   obj.data = {
@@ -867,6 +991,9 @@ function specToObject(spec) {
     isCounter: !!spec.isCounter,
     anim: spec.anim || { type:'none', delay:0, duration:500 },
   };
+  if (spec.kind === 'dotgrid') {
+    obj.data.dotgrid = { total: spec.total, highlight: spec.highlight, highlightColor: spec.highlightColor };
+  }
   return obj;
 }
 
@@ -899,7 +1026,7 @@ function refreshLayerList() {
   objs.forEach(o => {
     const row = document.createElement('div');
     row.className = 'layer-row' + (canvas.getActiveObject() === o ? ' active' : '');
-    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : o.type.toUpperCase();
+    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : o.type.toUpperCase();
     row.innerHTML = `<span class="ltype">${typeLabel}</span><span class="lname">${o.get('name') || o.type}</span>`;
     row.addEventListener('click', () => { canvas.setActiveObject(o); canvas.requestRenderAll(); });
     list.appendChild(row);
@@ -1055,6 +1182,31 @@ function selectProps(obj) {
       b.addEventListener('click', () => { obj.set('textAlign', al); canvas.requestRenderAll(); selectProps(obj); });
       taRow.appendChild(b);
     });
+  } else if (obj.data.dotgrid) {
+    const dg = obj.data.dotgrid;
+    const row = document.createElement('div'); row.className = 'row2'; body.appendChild(row);
+    const c1 = document.createElement('div'); row.appendChild(c1);
+    const lblTot = document.createElement('label'); lblTot.textContent = 'Total dots'; c1.appendChild(lblTot);
+    const inpTot = document.createElement('input'); inpTot.type='number'; inpTot.min=1; inpTot.max=1000; inpTot.value = dg.total;
+    inpTot.addEventListener('change', () => rebuildDotGrid(obj, { total: Math.max(1, Math.min(1000, parseInt(inpTot.value)||dg.total)) }));
+    c1.appendChild(inpTot);
+    const c2 = document.createElement('div'); row.appendChild(c2);
+    const lblHl = document.createElement('label'); lblHl.textContent = 'Highlighted subset'; c2.appendChild(lblHl);
+    const inpHl = document.createElement('input'); inpHl.type='number'; inpHl.min=0; inpHl.value = dg.highlight;
+    inpHl.addEventListener('change', () => rebuildDotGrid(obj, { highlight: Math.max(0, parseInt(inpHl.value)||0) }));
+    c2.appendChild(inpHl);
+
+    const lblHc = document.createElement('label'); lblHc.textContent = 'Highlight color'; body.appendChild(lblHc);
+    const swHc = document.createElement('div'); swHc.className='swatches'; body.appendChild(swHc);
+    SWATCH_OPTIONS.forEach(o => {
+      const s = document.createElement('div'); s.className = 'swatch' + (dg.highlightColor===o.val?' active':'');
+      s.style.background = o.val; s.title = o.name;
+      s.addEventListener('click', () => rebuildDotGrid(obj, { highlightColor: o.val }));
+      swHc.appendChild(s);
+    });
+    const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
+    note.textContent = 'This is one resizable layer, not individual dots — drag/resize it like any other layer. Its own label/citation text nearby are separate text layers, editable as usual.';
+    body.appendChild(note);
   } else {
     const lblC = document.createElement('label'); lblC.textContent = 'Fill color'; body.appendChild(lblC);
     const sw = document.createElement('div'); sw.className='swatches'; body.appendChild(sw);
