@@ -527,12 +527,22 @@ function refreshLayerList() {
   list.innerHTML = '';
   const objs = canvas.getObjects().filter(o => o !== bgMediaObj);
   if (!objs.length) { list.innerHTML = '<div class="empty-note">No layers yet — add one below or load a template.</div>'; return; }
-  objs.forEach(o => {
+  objs.forEach((o, i) => {
     const row = document.createElement('div');
     row.className = 'layer-row' + (canvas.getActiveObject() === o ? ' active' : '');
     const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : o.type.toUpperCase();
-    row.innerHTML = `<span class="ltype">${typeLabel}</span><span class="lname">${o.get('name') || o.type}</span>`;
+    row.innerHTML = `<span class="ltype">${typeLabel}</span><span class="lname">${o.get('name') || o.type}</span>
+      <button class="layer-order-btn" data-dir="up" title="Bring forward"${i === objs.length-1 ? ' disabled' : ''}>&#9650;</button>
+      <button class="layer-order-btn" data-dir="down" title="Send backward"${i === 0 ? ' disabled' : ''}>&#9660;</button>`;
     row.addEventListener('click', () => { canvas.setActiveObject(o); canvas.requestRenderAll(); });
+    row.querySelectorAll('.layer-order-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (btn.dataset.dir === 'up') canvas.bringObjectForward(o); else canvas.sendObjectBackwards(o);
+        canvas.requestRenderAll();
+        refreshLayerList();
+      });
+    });
     list.appendChild(row);
   });
 }
@@ -785,6 +795,10 @@ document.getElementById('addRect').addEventListener('click', () => {
 });
 document.getElementById('addCircle').addEventListener('click', () => {
   const obj = specToObject(C({ name:'Circle', left:860, top:440, radius:100, fill:'rgba(255,255,255,0.08)', stroke:COLORS.tealLight, strokeWidth:2, anim:{type:'pop',delay:0,duration:500} }));
+  canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
+});
+document.getElementById('addDotGrid').addEventListener('click', () => {
+  const obj = specToObject(D({ name:'Dot grid', left:W/2, top:H/2, originX:'center', originY:'center', total:50, highlight:5, highlightColor:COLORS.amberLight, anim:{type:'fade',delay:0,duration:500} }));
   canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
 });
 
