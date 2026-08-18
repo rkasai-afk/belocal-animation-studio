@@ -52,7 +52,15 @@ function fitCanvasToWrap() {
   const wrap = document.getElementById('stageWrap');
   const availW = Math.min(860, (wrap.parentElement && wrap.parentElement.clientWidth) || 860);
   const availH = Math.max(320, window.innerHeight - 260);
-  const scale = Math.min(availW / W, availH / H);
+  let scale = Math.min(availW / W, availH / H);
+  // A tall (Vertical) canvas on a normal laptop-height window gets squeezed down to an
+  // uncomfortably tiny width by the height constraint above (fitting a 1920-tall canvas
+  // within ~500-600px of vertical space forces the width under 350px). Floor the display
+  // width at a size that's still workable to drag/resize layers in, even if that means the
+  // canvas runs taller than the visible viewport and the page needs a little scrolling to
+  // reach the transport buttons below it — a tiny unusable thumbnail is the worse trade.
+  const minDispW = Math.min(availW, 420);
+  if (W * scale < minDispW) scale = minDispW / W;
   canvas.setDimensions({ width: W * scale, height: H * scale }, { cssOnly: true });
 }
 fitCanvasToWrap();
@@ -672,7 +680,7 @@ function refreshLayerList() {
   objs.forEach((o, i) => {
     const row = document.createElement('div');
     row.className = 'layer-row' + (canvas.getActiveObject() === o ? ' active' : '');
-    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : (o.data && o.data.pin) ? 'PIN' : (o.data && o.data.orgchart) ? 'TREE' : o.type.toUpperCase();
+    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : (o.data && o.data.pin) ? 'PIN' : (o.data && o.data.orgchart) ? 'TREE' : (o.data && o.data.userGroup) ? 'GROUP' : o.type.toUpperCase();
     row.innerHTML = `<span class="ltype">${typeLabel}</span><span class="lname">${o.get('name') || o.type}</span>
       <button class="layer-order-btn" data-dir="up" title="Bring forward"${i === objs.length-1 ? ' disabled' : ''}>&#9650;</button>
       <button class="layer-order-btn" data-dir="down" title="Send backward"${i === 0 ? ' disabled' : ''}>&#9660;</button>`;
@@ -768,6 +776,46 @@ function appendAlignToEachOtherToolbar(body, sel) {
   row2.appendChild(mk('Top edges','top')); row2.appendChild(mk('Centers ↕','centerV')); row2.appendChild(mk('Bottom edges','bottom'));
 }
 
+/* ---- Group / Ungroup: locks several layers' positions relative to each other so they   ---- */
+/* ---- move, resize, and align as one unit. A real fabric.Group, not a Dot-Grid-style     ---- */
+/* ---- regenerated composite — the member objects are the same live objects before and    ---- */
+/* ---- after, so ungrouping is fully reversible, including each member's own entrance      ---- */
+/* ---- animation (which pauses while nested — the animation engine only walks top-level    ---- */
+/* ---- canvas.getObjects(), not into group children — and resumes correctly on ungroup).   ---- */
+/* ---- Tagged with data.userGroup so it's distinguishable from the Dot-Grid/Pin/Org-Chart   ---- */
+/* ---- composite groups, which use `type==='group'` for the same reason but aren't meant   ---- */
+/* ---- to be user-ungroupable.                                                              ---- */
+function groupSelected() {
+  const active = canvas.getActiveObject();
+  if (!active || (active.type !== 'activeSelection' && active.type !== 'activeselection')) return;
+  const objects = active.getObjects().slice();
+  canvas.discardActiveObject();
+  objects.forEach(o => canvas.remove(o));
+  const group = new fabric.Group(objects);
+  group.set('name', 'Group');
+  group.data = { role:null, isCounter:false, anim:{type:'none',delay:0,duration:500}, userGroup:true };
+  canvas.add(group);
+  canvas.setActiveObject(group);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(group);
+  updateScrubRange();
+}
+function ungroupSelected() {
+  const active = canvas.getActiveObject();
+  if (!active || active.type !== 'group' || !(active.data && active.data.userGroup)) return;
+  const items = active.removeAll();
+  canvas.remove(active);
+  items.forEach(o => canvas.add(o));
+  canvas.discardActiveObject();
+  const sel = new fabric.ActiveSelection(items, { canvas });
+  canvas.setActiveObject(sel);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(sel);
+  updateScrubRange();
+}
+
 function availableFontFamilies() {
   const set = new Set();
   Object.values(FONT_PRESETS).forEach(p => { set.add(p.display); set.add(p.body); });
@@ -793,6 +841,14 @@ function selectProps(obj) {
       const div2 = document.createElement('div'); div2.className = 'divider'; body.appendChild(div2);
       appendAlignToEachOtherToolbar(body, obj);
     }
+    const div3 = document.createElement('div'); div3.className = 'divider'; body.appendChild(div3);
+    const btnGroup = document.createElement('button'); btnGroup.type = 'button'; btnGroup.className = 'primary'; btnGroup.style.width = '100%';
+    btnGroup.textContent = 'Group into one layer';
+    btnGroup.addEventListener('click', groupSelected);
+    body.appendChild(btnGroup);
+    const groupNote = document.createElement('div'); groupNote.className = 'empty-note'; groupNote.style.marginTop='6px';
+    groupNote.textContent = 'Locks these layers together as one — move, resize, or align the whole thing at once without them drifting apart. Ungroup any time to edit a piece on its own.';
+    body.appendChild(groupNote);
     return;
   }
   if (!obj.data) { body.innerHTML = '<div class="empty-note">Nothing to edit for this layer.</div>'; return; }
@@ -912,6 +968,15 @@ function selectProps(obj) {
     const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
     note.textContent = 'This is one resizable layer, not individual boxes — drag/resize it like any other layer. Edit the outline above and it regenerates in place.';
     body.appendChild(note);
+  } else if (obj.type === 'group' && obj.data.userGroup) {
+    const note = document.createElement('div'); note.className = 'empty-note';
+    note.textContent = `A group of ${obj.getObjects().length} layers, locked together — move, resize, or align it like one layer. Ungroup to edit or reposition a piece on its own again.`;
+    body.appendChild(note);
+    const div = document.createElement('div'); div.className = 'divider'; body.appendChild(div);
+    const btnUngroup = document.createElement('button'); btnUngroup.type = 'button'; btnUngroup.className = 'ghost'; btnUngroup.style.width = '100%';
+    btnUngroup.textContent = 'Ungroup';
+    btnUngroup.addEventListener('click', ungroupSelected);
+    body.appendChild(btnUngroup);
   } else {
     const lblC = document.createElement('label'); lblC.textContent = 'Fill color'; body.appendChild(lblC);
     const sw = document.createElement('div'); sw.className='swatches'; body.appendChild(sw);
