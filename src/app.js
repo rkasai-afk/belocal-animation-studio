@@ -99,6 +99,7 @@ function T(text, opts) {
 function R(opts) { return Object.assign({ kind:'rect' }, opts); }
 function C(opts) { return Object.assign({ kind:'circle' }, opts); }
 function D(opts) { return Object.assign({ kind:'dotgrid' }, opts); }
+function P(opts) { return Object.assign({ kind:'pin' }, opts); }
 
 /* ---- Dot-Grid Pictogram: built as one resizable "generated group" layer, not      ---- */
 /* ---- hundreds of individually-draggable dots. Total/highlight are edited via      ---- */
@@ -135,6 +136,44 @@ function rebuildDotGrid(obj, patch) {
   newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
   newObj.set('name', obj.get('name'));
   newObj.data = { role:null, isCounter:false, anim, dotgrid: cfg };
+  canvas.remove(obj);
+  canvas.insertAt(idx, newObj);
+  canvas.setActiveObject(newObj);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(newObj);
+  updateScrubRange();
+}
+
+/* ---- Map/Location Pin: a manual overlay marker, not a mapping feature — no tiles or geo   ---- */
+/* ---- data (would need external requests, which the single-file architecture rules out).   ---- */
+/* ---- Drop a map screenshot in as background media, then place pins on it. One regenerable  ---- */
+/* ---- group, following the exact same pattern as Dot-Grid Pictogram above.                  ---- */
+function buildPinGroup(label, color, style) {
+  label = label || 'Location';
+  color = color || COLORS.amberLight;
+  style = style === 'dot' ? 'dot' : 'pin';
+  const r = 16;
+  const parts = [];
+  if (style === 'pin') {
+    const tw = r*1.1, th = r*0.9;
+    parts.push(new fabric.Polygon([{x:-tw/2,y:0},{x:tw/2,y:0},{x:0,y:th}], {
+      left:0, top:r*1.6, fill:color, originX:'center', originY:'top', selectable:false, evented:false,
+    }));
+  }
+  parts.push(new fabric.Circle({ left:0, top:0, radius:r, fill:color, stroke:'#FFFFFF', strokeWidth:2, originX:'center', originY:'top', selectable:false, evented:false }));
+  parts.push(new fabric.Circle({ left:0, top:r, radius:5, fill:'#FFFFFF', originX:'center', originY:'center', selectable:false, evented:false }));
+  parts.push(new fabric.Textbox(label, { left:r+14, top:r, width:240, fontSize:24, fontWeight:700, fill:'#FFFFFF', textAlign:'left', originX:'left', originY:'center', selectable:false, evented:false, splitByGrapheme:false }));
+  return new fabric.Group(parts, { subTargetCheck:false });
+}
+function rebuildPin(obj, patch) {
+  const cfg = Object.assign({}, obj.data.pin, patch);
+  const idx = canvas.getObjects().indexOf(obj);
+  const anim = obj.data.anim;
+  const newObj = buildPinGroup(cfg.label, cfg.color, cfg.style);
+  newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
+  newObj.set('name', obj.get('name'));
+  newObj.data = { role:null, isCounter:false, anim, pin: cfg };
   canvas.remove(obj);
   canvas.insertAt(idx, newObj);
   canvas.setActiveObject(newObj);
@@ -487,6 +526,9 @@ function specToObject(spec) {
   } else if (spec.kind === 'dotgrid') {
     obj = buildDotGridGroup(spec.total, spec.highlight, spec.highlightColor);
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
+  } else if (spec.kind === 'pin') {
+    obj = buildPinGroup(spec.label, spec.color, spec.style);
+    obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
   }
   obj.set('name', spec.name || spec.kind);
   obj.data = {
@@ -496,6 +538,9 @@ function specToObject(spec) {
   };
   if (spec.kind === 'dotgrid') {
     obj.data.dotgrid = { total: spec.total, highlight: spec.highlight, highlightColor: spec.highlightColor };
+  }
+  if (spec.kind === 'pin') {
+    obj.data.pin = { label: spec.label || 'Location', color: spec.color || COLORS.amberLight, style: spec.style === 'dot' ? 'dot' : 'pin' };
   }
   return obj;
 }
@@ -530,7 +575,7 @@ function refreshLayerList() {
   objs.forEach((o, i) => {
     const row = document.createElement('div');
     row.className = 'layer-row' + (canvas.getActiveObject() === o ? ' active' : '');
-    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : o.type.toUpperCase();
+    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : (o.data && o.data.pin) ? 'PIN' : o.type.toUpperCase();
     row.innerHTML = `<span class="ltype">${typeLabel}</span><span class="lname">${o.get('name') || o.type}</span>
       <button class="layer-order-btn" data-dir="up" title="Bring forward"${i === objs.length-1 ? ' disabled' : ''}>&#9650;</button>
       <button class="layer-order-btn" data-dir="down" title="Send backward"${i === 0 ? ' disabled' : ''}>&#9660;</button>`;
@@ -721,6 +766,34 @@ function selectProps(obj) {
     const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
     note.textContent = 'This is one resizable layer, not individual dots — drag/resize it like any other layer. Its own label/citation text nearby are separate text layers, editable as usual.';
     body.appendChild(note);
+  } else if (obj.data.pin) {
+    const pn = obj.data.pin;
+    const lblL = document.createElement('label'); lblL.textContent = 'Label'; body.appendChild(lblL);
+    const inpL = document.createElement('input'); inpL.type = 'text'; inpL.value = pn.label;
+    inpL.addEventListener('change', () => rebuildPin(obj, { label: inpL.value || 'Location' }));
+    body.appendChild(inpL);
+
+    const lblSt = document.createElement('label'); lblSt.textContent = 'Marker shape'; body.appendChild(lblSt);
+    const stRow = document.createElement('div'); stRow.className = 'row2'; body.appendChild(stRow);
+    [{v:'pin',label:'Pin'},{v:'dot',label:'Dot'}].forEach(s => {
+      const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
+      b.className = 'small' + (pn.style === s.v ? ' primary' : ' ghost');
+      b.textContent = s.label;
+      b.addEventListener('click', () => rebuildPin(obj, { style: s.v }));
+      stRow.appendChild(b);
+    });
+
+    const lblC = document.createElement('label'); lblC.textContent = 'Marker color'; body.appendChild(lblC);
+    const sw = document.createElement('div'); sw.className='swatches'; body.appendChild(sw);
+    SWATCH_OPTIONS.forEach(o => {
+      const s = document.createElement('div'); s.className = 'swatch' + (pn.color===o.val?' active':'');
+      s.style.background = o.val; s.title = o.name;
+      s.addEventListener('click', () => rebuildPin(obj, { color: o.val }));
+      sw.appendChild(s);
+    });
+    const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
+    note.textContent = 'A location marker for pointing at a spot on a map image or photo — drop your map in as background media, then drag this into place.';
+    body.appendChild(note);
   } else {
     const lblC = document.createElement('label'); lblC.textContent = 'Fill color'; body.appendChild(lblC);
     const sw = document.createElement('div'); sw.className='swatches'; body.appendChild(sw);
@@ -799,6 +872,10 @@ document.getElementById('addCircle').addEventListener('click', () => {
 });
 document.getElementById('addDotGrid').addEventListener('click', () => {
   const obj = specToObject(D({ name:'Dot grid', left:W/2, top:H/2, originX:'center', originY:'center', total:50, highlight:5, highlightColor:COLORS.amberLight, anim:{type:'fade',delay:0,duration:500} }));
+  canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
+});
+document.getElementById('addPin').addEventListener('click', () => {
+  const obj = specToObject(P({ name:'Map pin', left:W/2, top:H/2, originX:'center', originY:'center', label:'Location', color:COLORS.amberLight, style:'pin', anim:{type:'pop',delay:0,duration:400} }));
   canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
 });
 
