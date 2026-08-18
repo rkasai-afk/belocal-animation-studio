@@ -57,7 +57,39 @@ async function main() {
   dims = await page.evaluate(() => ({ w: canvas.width, h: canvas.height }));
   console.log('5. landscape dims:', dims, dims.w === 1920 && dims.h === 1080 ? 'OK' : 'FAIL');
 
-  // --- 6. blank canvas + manual layer survives an aspect switch (not wiped) ---
+  // --- 6. W/H-relative templates (Stat Reveal, Checklist Reveal, Dot-Grid) must stay fully
+  // within the frame at every aspect ratio — these three were converted to relative layout
+  // math in this PR, so unlike step 3 above, overflow here IS a real regression.
+  async function loadTemplateByLabel(matchText) {
+    const btns = await page.$$('.tpl-btn');
+    const labels = await Promise.all(btns.map(b => b.textContent()));
+    const idx = labels.findIndex(l => l.includes(matchText));
+    if (idx === -1) throw new Error('template button not found: ' + matchText);
+    await btns[idx].click();
+    await page.waitForTimeout(300);
+  }
+  async function checkOverflow(label) {
+    return page.evaluate(() => {
+      return canvas.getObjects().filter(o => {
+        const r = o.getBoundingRect(true, true);
+        return r.left < -1 || r.top < -1 || r.left + r.width > canvas.width + 1 || r.top + r.height > canvas.height + 1;
+      }).map(o => o.name || o.type);
+    });
+  }
+  let n = 7;
+  for (const tplLabel of ['Stat Reveal', 'Checklist Reveal', 'Dot-Grid Pictogram']) {
+    for (const aspectLabel of ['Vertical', 'Square', 'Widescreen']) {
+      await clickAspect(aspectLabel);
+      await loadTemplateByLabel(tplLabel);
+      const overflow = await checkOverflow();
+      console.log(`${n}. ${tplLabel} @ ${aspectLabel}: overflowing =`, overflow, overflow.length === 0 ? 'OK' : 'FAIL');
+      await page.screenshot({ path: path.join(outDir, `${String(n).padStart(2,'0')}_${tplLabel.replace(/[^a-z0-9]/gi,'_')}_${aspectLabel}.png`) });
+      n++;
+    }
+  }
+  await clickAspect('Widescreen');
+
+  // --- blank canvas + manual layer survives an aspect switch (not wiped) ---
   const tplBtns = await page.$$('.tpl-btn');
   const tplLabels = await Promise.all(tplBtns.map(b => b.textContent()));
   const blankIdx = tplLabels.findIndex(l => l.includes('Blank canvas'));
@@ -68,7 +100,7 @@ async function main() {
   const beforeCount = await page.evaluate(() => canvas.getObjects().length);
   await clickAspect('Vertical');
   const afterCount = await page.evaluate(() => canvas.getObjects().length);
-  console.log('6. blank-canvas manual layer count before/after aspect switch:', beforeCount, afterCount, beforeCount === afterCount && afterCount > 0 ? 'OK (preserved)' : 'FAIL');
+  console.log(`${n}. blank-canvas manual layer count before/after aspect switch:`, beforeCount, afterCount, beforeCount === afterCount && afterCount > 0 ? 'OK (preserved)' : 'FAIL');
   await page.screenshot({ path: path.join(outDir, '03_blank_manual_after_switch.png') });
 
   console.log('HAD ERROR:', hadError);

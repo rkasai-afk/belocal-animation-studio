@@ -106,7 +106,7 @@ function D(opts) { return Object.assign({ kind:'dotgrid' }, opts); }
 function buildDotGridGroup(total, highlight, highlightColor) {
   total = Math.max(1, Math.round(total));
   highlight = Math.min(total, Math.max(0, Math.round(highlight)));
-  const boxW = 1400, maxH = 380;
+  const boxW = Math.min(1400, W * 0.9), maxH = 380;
   let cols = Math.max(1, Math.ceil(Math.sqrt(total * (boxW / maxH))));
   let rows = Math.ceil(total / cols);
   let pitch = Math.min(boxW / cols, maxH / rows);
@@ -151,19 +151,24 @@ const TEMPLATES = {
   },
   stat: {
     label: 'Stat Reveal',
-    layers: () => [
-      T("JAPAN'S NATIONAL TOURISM POLICY", { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:170, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-      T('By 2030, the Cabinet-approved plan targets:', { name:'Headline', role:'display', fontWeight:700, fontSize:46, fill:'#FFFFFF', left:960, top:230, width:1500, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
-      R({ name:'Card 1', left:355, top:420, width:560, height:340, rx:18, ry:18, fill:'rgba(255,255,255,0.06)', stroke:'rgba(255,255,255,0.14)', strokeWidth:2, anim:{type:'pop',delay:1050,duration:600} }),
-      T('60M', { name:'Card 1 number', role:'display', fontWeight:700, fontSize:104, fill:COLORS.tealLight, left:635, top:565, originX:'center', originY:'center', textAlign:'center', isCounter:true, anim:{type:'countup',delay:1600,duration:1400} }),
-      T('international visitors', { name:'Card 1 label', role:'body', fontSize:26, fill:'rgba(255,255,255,0.82)', left:635, top:700, width:480, originX:'center', textAlign:'center', anim:{type:'fade',delay:1050,duration:600} }),
-      R({ name:'Card 2', left:1005, top:420, width:560, height:340, rx:18, ry:18, fill:'rgba(255,255,255,0.06)', stroke:'rgba(255,255,255,0.14)', strokeWidth:2, anim:{type:'pop',delay:1200,duration:600} }),
-      T('¥15T', { name:'Card 2 number', role:'display', fontWeight:700, fontSize:104, fill:COLORS.greenLight, left:1285, top:565, originX:'center', originY:'center', textAlign:'center', isCounter:true, anim:{type:'countup',delay:1750,duration:1400} }),
-      T('in inbound spending', { name:'Card 2 label', role:'body', fontSize:26, fill:'rgba(255,255,255,0.82)', left:1285, top:700, width:480, originX:'center', textAlign:'center', anim:{type:'fade',delay:1200,duration:600} }),
-      T('Cabinet-approved national tourism plan · 27 March 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:800, width:1400, originX:'center', textAlign:'center', anim:{type:'fade',delay:3300,duration:600} }),
-      R({ name:'Tag pill', left:960, top:855, width:420, height:48, rx:24, ry:24, fill:COLORS.amber, originX:'center', anim:{type:'pop',delay:3550,duration:500} }),
-      T('TARGET, NOT A FORECAST', { name:'Tag text', role:'body', fontWeight:700, fontSize:20, fill:'#FFFFFF', left:960, top:879, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:3550,duration:500} }),
-    ],
+    layers: () => {
+      const cx = W/2, rel = W/1920;
+      const cardW = 560*rel, cardH = 340, gap = 90*rel;
+      const c1x = cx - gap/2 - cardW, c2x = cx + gap/2;
+      return [
+        T("JAPAN'S NATIONAL TOURISM POLICY", { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:170, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('By 2030, the Cabinet-approved plan targets:', { name:'Headline', role:'display', fontWeight:700, fontSize:46, fill:'#FFFFFF', left:cx, top:230, width:1500*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+        R({ name:'Card 1', left:c1x, top:420, width:cardW, height:cardH, rx:18, ry:18, fill:'rgba(255,255,255,0.06)', stroke:'rgba(255,255,255,0.14)', strokeWidth:2, anim:{type:'pop',delay:1050,duration:600} }),
+        T('60M', { name:'Card 1 number', role:'display', fontWeight:700, fontSize:104, fill:COLORS.tealLight, left:c1x+cardW/2, top:565, originX:'center', originY:'center', textAlign:'center', isCounter:true, anim:{type:'countup',delay:1600,duration:1400} }),
+        T('international visitors', { name:'Card 1 label', role:'body', fontSize:26, fill:'rgba(255,255,255,0.82)', left:c1x+cardW/2, top:700, width:cardW-80, originX:'center', textAlign:'center', anim:{type:'fade',delay:1050,duration:600} }),
+        R({ name:'Card 2', left:c2x, top:420, width:cardW, height:cardH, rx:18, ry:18, fill:'rgba(255,255,255,0.06)', stroke:'rgba(255,255,255,0.14)', strokeWidth:2, anim:{type:'pop',delay:1200,duration:600} }),
+        T('¥15T', { name:'Card 2 number', role:'display', fontWeight:700, fontSize:104, fill:COLORS.greenLight, left:c2x+cardW/2, top:565, originX:'center', originY:'center', textAlign:'center', isCounter:true, anim:{type:'countup',delay:1750,duration:1400} }),
+        T('in inbound spending', { name:'Card 2 label', role:'body', fontSize:26, fill:'rgba(255,255,255,0.82)', left:c2x+cardW/2, top:700, width:cardW-80, originX:'center', textAlign:'center', anim:{type:'fade',delay:1200,duration:600} }),
+        T('Cabinet-approved national tourism plan · 27 March 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:800, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:3300,duration:600} }),
+        R({ name:'Tag pill', left:cx, top:855, width:420*rel, height:48, rx:24, ry:24, fill:COLORS.amber, originX:'center', anim:{type:'pop',delay:3550,duration:500} }),
+        T('TARGET, NOT A FORECAST', { name:'Tag text', role:'body', fontWeight:700, fontSize:20, fill:'#FFFFFF', left:cx, top:879, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:3550,duration:500} }),
+      ];
+    },
   },
   cards: {
     label: 'Category Cards',
@@ -195,10 +200,11 @@ const TEMPLATES = {
         'Complete Customs at the airport before your refund',
         'Refund lands on your card, not in cash',
       ];
-      const listW=1100, itemH=92, startY=430, startX=960-listW/2;
+      const cx = W/2, rel = W/1920;
+      const listW=1100*rel, itemH=92, startY=430, startX=cx-listW/2;
       const out = [
-        T('BEFORE YOU FILM THIS BEAT', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:200, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-        T('Traveller checklist:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:260, width:1400, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+        T('BEFORE YOU FILM THIS BEAT', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:200, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('Traveller checklist:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:cx, top:260, width:1400*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
       ];
       items.forEach((it,i) => {
         const y = startY+i*itemH, delay = 1000+i*220;
@@ -206,22 +212,25 @@ const TEMPLATES = {
         out.push(R({ name:`Row ${i+1} check`, left:startX+18, top:y+(itemH-14)/2-23, width:46, height:46, rx:9, ry:9, fill:COLORS.greenLight, anim:{type:'pop',delay:delay+150,duration:400} }));
         out.push(T(it, { name:`Row ${i+1} text`, role:'body', fontSize:26, fill:'#FFFFFF', left:startX+18+46+26, top:y+(itemH-14)/2, width:listW-46-70, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
       });
-      out.push(T('National Tax Agency guidance', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:startY+items.length*itemH+50, width:1400, originX:'center', textAlign:'center', anim:{type:'fade',delay:1000+items.length*220+250,duration:500} }));
+      out.push(T('National Tax Agency guidance', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:startY+items.length*itemH+50, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1000+items.length*220+250,duration:500} }));
       return out;
     },
   },
   dotgrid: {
     label: 'Dot-Grid Pictogram',
-    layers: () => [
-      T('DIET SEAT REDUCTION BILL', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:190, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-      T("Under the bill's fallback, the House would go from:", { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:250, width:1500, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
-      D({ name:'Dot grid', left:960, top:420, width:1400, originX:'center', originY:'top', total:465, highlight:45, highlightColor:COLORS.amberLight, anim:{type:'fade',delay:900,duration:700} }),
-      T('465 seats today', { name:'Total label', role:'body', fontSize:26, fill:'rgba(255,255,255,0.75)', left:960, top:830, width:900, textAlign:'center', originX:'center', anim:{type:'fade',delay:2200,duration:500} }),
-      T('45 PR seats cut under the fallback', { name:'Highlight label', role:'body', fontWeight:700, fontSize:28, fill:COLORS.amberLight, left:960, top:872, width:900, textAlign:'center', originX:'center', anim:{type:'fade',delay:2350,duration:500} }),
-      T('Bill under continued Diet examination as of 16 Aug 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:930, width:1400, originX:'center', textAlign:'center', anim:{type:'fade',delay:2650,duration:600} }),
-      R({ name:'Tag pill', left:960, top:985, width:520, height:48, rx:24, ry:24, fill:COLORS.red, originX:'center', anim:{type:'pop',delay:2850,duration:500} }),
-      T('BILL ONLY — NOT ENACTED', { name:'Tag text', role:'body', fontWeight:700, fontSize:20, fill:'#FFFFFF', left:960, top:1009, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:2850,duration:500} }),
-    ],
+    layers: () => {
+      const cx = W/2, rel = W/1920;
+      return [
+        T('DIET SEAT REDUCTION BILL', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:190, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T("Under the bill's fallback, the House would go from:", { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:cx, top:250, width:1500*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+        D({ name:'Dot grid', left:cx, top:420, width:Math.min(1400,W*0.9), originX:'center', originY:'top', total:465, highlight:45, highlightColor:COLORS.amberLight, anim:{type:'fade',delay:900,duration:700} }),
+        T('465 seats today', { name:'Total label', role:'body', fontSize:26, fill:'rgba(255,255,255,0.75)', left:cx, top:830, width:900*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:2200,duration:500} }),
+        T('45 PR seats cut under the fallback', { name:'Highlight label', role:'body', fontWeight:700, fontSize:28, fill:COLORS.amberLight, left:cx, top:872, width:900*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:2350,duration:500} }),
+        T('Bill under continued Diet examination as of 16 Aug 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:930, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:2650,duration:600} }),
+        R({ name:'Tag pill', left:cx, top:985, width:520*rel, height:48, rx:24, ry:24, fill:COLORS.red, originX:'center', anim:{type:'pop',delay:2850,duration:500} }),
+        T('BILL ONLY — NOT ENACTED', { name:'Tag text', role:'body', fontWeight:700, fontSize:20, fill:'#FFFFFF', left:cx, top:1009, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:2850,duration:500} }),
+      ];
+    },
   },
   compare: {
     label: 'Before / After',
