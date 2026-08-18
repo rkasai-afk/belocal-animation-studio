@@ -147,10 +147,12 @@ function rebuildDotGrid(obj, patch) {
 const TEMPLATES = {
   blank: {
     label: 'Blank canvas',
+    category: 'Basics',
     layers: () => [],
   },
   stat: {
     label: 'Stat Reveal',
+    category: 'Stats & Data',
     layers: () => {
       const cx = W/2, rel = W/1920;
       const cardW = 560*rel, cardH = 340, gap = 90*rel;
@@ -172,6 +174,7 @@ const TEMPLATES = {
   },
   cards: {
     label: 'Category Cards',
+    category: 'Lists & Steps',
     layers: () => {
       const items = ['National government','Local government','Residents','Tourism business','Travellers'];
       const n = items.length, cx = W/2, rel = W/1920, portrait = H > W;
@@ -211,6 +214,7 @@ const TEMPLATES = {
   },
   checklist: {
     label: 'Checklist Reveal',
+    category: 'Lists & Steps',
     layers: () => {
       const items = [
         'Keep every receipt until you leave Japan',
@@ -236,6 +240,7 @@ const TEMPLATES = {
   },
   dotgrid: {
     label: 'Dot-Grid Pictogram',
+    category: 'Stats & Data',
     layers: () => {
       const cx = W/2, rel = W/1920;
       return [
@@ -252,6 +257,7 @@ const TEMPLATES = {
   },
   compare: {
     label: 'Before / After',
+    category: 'Comparisons',
     layers: () => {
       const leftLines = ['Pay tax-free price at the shop', 'Show your passport at checkout'];
       const rightLines = ['Pay full price with tax', 'Customs confirms your export', 'Shop or provider refunds you'];
@@ -309,6 +315,7 @@ const TEMPLATES = {
   },
   flow: {
     label: 'Process Flow',
+    category: 'Lists & Steps',
     layers: () => {
       const steps = ['Buy at full price', 'Customs confirms export', 'Shop or provider refunds you', 'Refund reaches your card'];
       const n = steps.length, cx = W/2, rel = W/1920, portrait = H > W;
@@ -354,6 +361,7 @@ const TEMPLATES = {
   },
   lowerthird: {
     label: 'Lower-Third (Speaker ID)',
+    category: 'People & Quotes',
     layers: () => {
       const barW = Math.min(700, W*0.55), barH = 110;
       const x = W*0.06, y = H*0.82;
@@ -367,6 +375,7 @@ const TEMPLATES = {
   },
   quote: {
     label: 'Quote / Testimonial',
+    category: 'People & Quotes',
     layers: () => {
       const cx = W/2, boxW = Math.min(1300, W*0.8);
       return [
@@ -380,6 +389,7 @@ const TEMPLATES = {
   },
   timeline: {
     label: 'Timeline',
+    category: 'Lists & Steps',
     layers: () => {
       const events = [
         { date:'2019', text:'Idea first proposed' },
@@ -422,6 +432,7 @@ const TEMPLATES = {
   },
   listicle: {
     label: 'Listicle / Ranking',
+    category: 'Lists & Steps',
     layers: () => {
       const items = [
         'Kyoto — historic temples and gardens',
@@ -778,15 +789,31 @@ document.getElementById('addCircle').addEventListener('click', () => {
 });
 
 /* ============ TEMPLATE GRID ============ */
+let currentCategory = 'All';
+function renderCategoryChips() {
+  const wrap = document.getElementById('categoryChips');
+  if (!wrap) return;
+  const categories = ['All', ...new Set(Object.values(TEMPLATES).map(t => t.category))];
+  wrap.innerHTML = '';
+  categories.forEach(cat => {
+    const btn = document.createElement('button');
+    btn.className = 'cat-chip' + (cat === currentCategory ? ' active' : '');
+    btn.textContent = cat;
+    btn.addEventListener('click', () => { currentCategory = cat; renderCategoryChips(); renderTemplateGrid(); });
+    wrap.appendChild(btn);
+  });
+}
 function renderTemplateGrid() {
   const grid = document.getElementById('templateGrid');
   grid.innerHTML = '';
-  Object.keys(TEMPLATES).forEach(id => {
-    const btn = document.createElement('button');
-    btn.className = 'tpl-btn'; btn.textContent = TEMPLATES[id].label;
-    btn.addEventListener('click', () => loadTemplate(id));
-    grid.appendChild(btn);
-  });
+  Object.keys(TEMPLATES)
+    .filter(id => currentCategory === 'All' || TEMPLATES[id].category === currentCategory)
+    .forEach(id => {
+      const btn = document.createElement('button');
+      btn.className = 'tpl-btn'; btn.textContent = TEMPLATES[id].label;
+      btn.addEventListener('click', () => loadTemplate(id));
+      grid.appendChild(btn);
+    });
 }
 
 /* ============ FONT PRESET UI ============ */
@@ -1165,6 +1192,7 @@ function setStatus(msg) { document.getElementById('status').textContent = msg; }
 
 /* ============ INIT ============ */
 renderAspectButtons();
+renderCategoryChips();
 renderTemplateGrid();
 renderFontPresets();
 renderBgColorSwatches();
