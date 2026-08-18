@@ -77,7 +77,7 @@ async function main() {
     });
   }
   let n = 7;
-  for (const tplLabel of ['Stat Reveal', 'Checklist Reveal', 'Dot-Grid Pictogram']) {
+  for (const tplLabel of ['Stat Reveal', 'Checklist Reveal', 'Dot-Grid Pictogram', 'Category Cards', 'Before / After', 'Process Flow']) {
     for (const aspectLabel of ['Vertical', 'Square', 'Widescreen']) {
       await clickAspect(aspectLabel);
       await loadTemplateByLabel(tplLabel);
