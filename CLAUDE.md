@@ -2,9 +2,10 @@
 
 A free-form, browser-based editor for building B-roll/explainer animations — stat reveals,
 category cards, before/after comparisons, process flows, checklists, dot-grid pictograms,
-timelines, lower-thirds, quotes, listicles, and map pins — for the BeLocal Japan Explainer
-Series YouTube videos, and more broadly for other B-roll needs beyond that one series. Built
-for a non-technical video editor to use directly — no install, no account, no server.
+timelines, lower-thirds, quotes, listicles, map pins, and org/family trees — for the BeLocal
+Japan Explainer Series YouTube videos, and more broadly for other B-roll needs beyond that
+one series. Built for a non-technical video editor to use directly — no install, no
+account, no server.
 
 Canvas size is a per-project choice (Widescreen 16:9, Vertical 9:16, or Square 1:1 — see
 "Aspect ratio system" below), so it's no longer landscape-only.
@@ -56,6 +57,9 @@ tests/test_v8.js              Playwright regression: layer z-order buttons (veri
                                Dot-Grid quick-add button
 tests/test_v9.js              Playwright regression: Map/Location Pin quick-add, props-panel
                                edits, transform preservation across rebuilds, save/load
+tests/test_v10.js             Playwright regression: Org/Family Tree quick-add, branching
+                               (not just linear-chain) layout math verified directly via
+                               parseOrgTree()/layoutOrgTree(), color edits, save/load
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -69,7 +73,7 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
    with `HAD ERROR: false` (no console/page errors). Read the printed assertions, not just
    the exit code — several tests print `OK`/`FAIL` inline rather than throwing.
 4. For anything visual (new template, layout change, animation timing), also actually look
-   at the screenshots the tests write to `qa/qa2/` through `qa/qa9/` — passing assertions
+   at the screenshots the tests write to `qa/qa2/` through `qa/qa10/` — passing assertions
    don't catch "it renders but looks wrong." Read a few of them back before calling it done.
    For anything aspect-ratio-related specifically, check Vertical and Square, not just the
    Widescreen default — a layout that fits fine at 1920 wide can overflow badly at 1080.
@@ -97,8 +101,9 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
   clutter, terrible perf on drag). It regenerates via `buildDotGridGroup()` /
   `rebuildDotGrid()` whenever Total/Highlighted/Color change in the props panel — the old
   group is torn down and a new one built in its place, preserving position/scale/opacity.
-  Map/Location Pin (`buildPinGroup()`/`rebuildPin()`) follows the exact same pattern. If you
-  add another "many small identical things" or "regenerate from a few fields" layer type,
+  Map/Location Pin (`buildPinGroup()`/`rebuildPin()`) and Org/Family Tree
+  (`buildOrgChartGroup()`/`rebuildOrgChart()`) follow the exact same pattern. If you add
+  another "many small identical things" or "regenerate from a few fields" layer type,
   follow this same pattern rather than making them individually draggable.
 - **`specToObject()` defaults `width` to `400` and `textAlign` to `'center'`** for any text
   spec that omits them — not Fabric's own defaults, this project's. A short text object
@@ -143,7 +148,8 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
   all three presets, not just the Widescreen default it'll look fine in by construction.
 - **Templates are data, not code.** Each entry in the `TEMPLATES` object (`app.js`) is a
   `layers()` function returning an array of plain-object layer specs built with the `T()`
-  (text), `R()` (rect), `C()` (circle), `D()` (dot-grid), `P()` (map pin) helpers. Adding a
+  (text), `R()` (rect), `C()` (circle), `D()` (dot-grid), `P()` (map pin), `O()` (org/family
+  tree) helpers. Adding a
   template means writing a new entry with new specs — it does not touch the
   rendering/animation engine. `specToObject()` turns a spec into a live Fabric object. Each
   entry also carries a `category` string (shown as a filter chip in the template picker) —
@@ -172,13 +178,6 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
 
 Flagged to the user already as not-yet-built, in case they come back to them:
 
-- **An org/family-tree layer type** (needed for Episode 11's Imperial succession beats).
-  Deliberately not built alongside Map Pin — it needs an actual tree-layout algorithm (level
-  assignment, connector routing), a materially bigger and more error-prone lift than a
-  fixed-shape composite, and deserves its own scoped design pass rather than being squeezed
-  into a batch of other work. New `kind` in `specToObject()`, new `selectProps()` branch,
-  drag/resize/align/animate/record all come free from the existing generic machinery — same
-  as Dot-Grid and Map Pin — but the layout math itself is new territory.
 - **Undo/redo and drag-to-reorder layers** — the layers panel has bring-forward/send-backward
   buttons (`app.js`, `refreshLayerList()`) but no full undo history and no pointer-drag
   reordering. Both are real, independent UI investments (a command/state-snapshot stack;
