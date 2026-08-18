@@ -100,6 +100,7 @@ function R(opts) { return Object.assign({ kind:'rect' }, opts); }
 function C(opts) { return Object.assign({ kind:'circle' }, opts); }
 function D(opts) { return Object.assign({ kind:'dotgrid' }, opts); }
 function P(opts) { return Object.assign({ kind:'pin' }, opts); }
+function O(opts) { return Object.assign({ kind:'orgchart' }, opts); }
 
 /* ---- Dot-Grid Pictogram: built as one resizable "generated group" layer, not      ---- */
 /* ---- hundreds of individually-draggable dots. Total/highlight are edited via      ---- */
@@ -174,6 +175,96 @@ function rebuildPin(obj, patch) {
   newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
   newObj.set('name', obj.get('name'));
   newObj.data = { role:null, isCounter:false, anim, pin: cfg };
+  canvas.remove(obj);
+  canvas.insertAt(idx, newObj);
+  canvas.setActiveObject(newObj);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(newObj);
+  updateScrubRange();
+}
+
+/* ---- Org/Family Tree: parses a plain indented-text outline (2 spaces = one level     ---- */
+/* ---- deeper) into a tree, lays it out with each parent centered above its children    ---- */
+/* ---- (classic leaf-counting layout — not the most compact possible, but simple and    ---- */
+/* ---- always correct), and connects them with straight lines. One regenerable group,   ---- */
+/* ---- same pattern as Dot-Grid/Map Pin above — no drag-to-rearrange individual boxes,  ---- */
+/* ---- just re-type the outline and the whole tree regenerates in place.                ---- */
+function parseOrgTree(text) {
+  const lines = (text || '').split('\n').map(l => l.replace(/\t/g, '  ')).filter(l => l.trim().length);
+  if (!lines.length) return null;
+  const root = { name:'', children:[] };
+  const stack = [root];
+  lines.forEach(line => {
+    const indent = line.match(/^ */)[0].length;
+    const level = Math.floor(indent / 2);
+    const node = { name: line.trim(), children:[] };
+    while (stack.length > level + 1) stack.pop();
+    stack[stack.length - 1].children.push(node);
+    stack.push(node);
+  });
+  // A single top-level entry is the root; multiple top-level entries share an invisible
+  // synthetic root purely for layout (no box/connector is drawn for it).
+  return root.children.length === 1 ? root.children[0] : root;
+}
+function layoutOrgTree(root, boxW, boxH, hGap, vGap) {
+  let nextSlot = 0;
+  (function place(node, depth) {
+    node.depth = depth;
+    if (!node.children.length) {
+      node.cx = nextSlot * (boxW + hGap) + boxW / 2;
+      nextSlot++;
+    } else {
+      node.children.forEach(c => place(c, depth + 1));
+      const first = node.children[0], last = node.children[node.children.length - 1];
+      node.cx = (first.cx + last.cx) / 2;
+    }
+    node.cy = depth * (boxH + vGap) + boxH / 2;
+  })(root, root.name ? 0 : -1); // synthetic root (no name) doesn't occupy a visible row
+  return root;
+}
+function buildOrgChartGroup(text, color) {
+  color = color || COLORS.tealLight;
+  const boxW = 190, boxH = 56, hGap = 24, vGap = 46;
+  const root = parseOrgTree(text) || { name:'Type names below, one per line', children:[] };
+  layoutOrgTree(root, boxW, boxH, hGap, vGap);
+  const parts = [];
+  (function walk(node) {
+    if (node.name) {
+      parts.push(new fabric.Rect({
+        left: node.cx, top: node.cy, width: boxW, height: boxH, rx: 8, ry: 8,
+        fill: 'rgba(255,255,255,0.08)', stroke: color, strokeWidth: 2,
+        originX: 'center', originY: 'center', selectable:false, evented:false,
+      }));
+      parts.push(new fabric.Textbox(node.name, {
+        left: node.cx, top: node.cy, width: boxW - 20, fontSize: 18, fontWeight: 600,
+        fill: '#FFFFFF', textAlign: 'center', originX: 'center', originY: 'center',
+        selectable:false, evented:false, splitByGrapheme: false,
+      }));
+    }
+    node.children.forEach(child => {
+      if (node.name) {
+        parts.push(new fabric.Line([node.cx, node.cy + boxH/2, child.cx, child.cy - boxH/2], {
+          stroke: 'rgba(255,255,255,0.4)', strokeWidth: 2, selectable:false, evented:false,
+        }));
+      }
+      walk(child);
+    });
+  })(root);
+  const group = new fabric.Group(parts, { subTargetCheck:false });
+  // Keep an initial reasonable footprint even for a wide tree — the user can still resize
+  // freely afterward via the normal corner handles like any other layer.
+  if (group.width > W * 0.9) group.scale((W * 0.9) / group.width);
+  return group;
+}
+function rebuildOrgChart(obj, patch) {
+  const cfg = Object.assign({}, obj.data.orgchart, patch);
+  const idx = canvas.getObjects().indexOf(obj);
+  const anim = obj.data.anim;
+  const newObj = buildOrgChartGroup(cfg.text, cfg.color);
+  newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
+  newObj.set('name', obj.get('name'));
+  newObj.data = { role:null, isCounter:false, anim, orgchart: cfg };
   canvas.remove(obj);
   canvas.insertAt(idx, newObj);
   canvas.setActiveObject(newObj);
@@ -529,6 +620,9 @@ function specToObject(spec) {
   } else if (spec.kind === 'pin') {
     obj = buildPinGroup(spec.label, spec.color, spec.style);
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
+  } else if (spec.kind === 'orgchart') {
+    obj = buildOrgChartGroup(spec.text, spec.color);
+    obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
   }
   obj.set('name', spec.name || spec.kind);
   obj.data = {
@@ -541,6 +635,9 @@ function specToObject(spec) {
   }
   if (spec.kind === 'pin') {
     obj.data.pin = { label: spec.label || 'Location', color: spec.color || COLORS.amberLight, style: spec.style === 'dot' ? 'dot' : 'pin' };
+  }
+  if (spec.kind === 'orgchart') {
+    obj.data.orgchart = { text: spec.text || '', color: spec.color || COLORS.tealLight };
   }
   return obj;
 }
@@ -575,7 +672,7 @@ function refreshLayerList() {
   objs.forEach((o, i) => {
     const row = document.createElement('div');
     row.className = 'layer-row' + (canvas.getActiveObject() === o ? ' active' : '');
-    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : (o.data && o.data.pin) ? 'PIN' : o.type.toUpperCase();
+    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : (o.data && o.data.pin) ? 'PIN' : (o.data && o.data.orgchart) ? 'TREE' : o.type.toUpperCase();
     row.innerHTML = `<span class="ltype">${typeLabel}</span><span class="lname">${o.get('name') || o.type}</span>
       <button class="layer-order-btn" data-dir="up" title="Bring forward"${i === objs.length-1 ? ' disabled' : ''}>&#9650;</button>
       <button class="layer-order-btn" data-dir="down" title="Send backward"${i === 0 ? ' disabled' : ''}>&#9660;</button>`;
@@ -794,6 +891,27 @@ function selectProps(obj) {
     const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
     note.textContent = 'A location marker for pointing at a spot on a map image or photo — drop your map in as background media, then drag this into place.';
     body.appendChild(note);
+  } else if (obj.data.orgchart) {
+    const oc = obj.data.orgchart;
+    const lblT = document.createElement('label'); lblT.textContent = 'Names, one per line'; body.appendChild(lblT);
+    const ta = document.createElement('textarea'); ta.value = oc.text; ta.style.minHeight = '140px';
+    ta.addEventListener('change', () => rebuildOrgChart(obj, { text: ta.value }));
+    body.appendChild(ta);
+    const helpNote = document.createElement('div'); helpNote.className = 'empty-note'; helpNote.style.marginTop='6px';
+    helpNote.textContent = 'Indent a line by 2 spaces to make it a child of the line above — indent twice for a grandchild, and so on. Several names at the same (no) indent become siblings.';
+    body.appendChild(helpNote);
+
+    const lblC = document.createElement('label'); lblC.textContent = 'Box / line color'; body.appendChild(lblC);
+    const sw = document.createElement('div'); sw.className='swatches'; body.appendChild(sw);
+    SWATCH_OPTIONS.forEach(o => {
+      const s = document.createElement('div'); s.className = 'swatch' + (oc.color===o.val?' active':'');
+      s.style.background = o.val; s.title = o.name;
+      s.addEventListener('click', () => rebuildOrgChart(obj, { color: o.val }));
+      sw.appendChild(s);
+    });
+    const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
+    note.textContent = 'This is one resizable layer, not individual boxes — drag/resize it like any other layer. Edit the outline above and it regenerates in place.';
+    body.appendChild(note);
   } else {
     const lblC = document.createElement('label'); lblC.textContent = 'Fill color'; body.appendChild(lblC);
     const sw = document.createElement('div'); sw.className='swatches'; body.appendChild(sw);
@@ -876,6 +994,11 @@ document.getElementById('addDotGrid').addEventListener('click', () => {
 });
 document.getElementById('addPin').addEventListener('click', () => {
   const obj = specToObject(P({ name:'Map pin', left:W/2, top:H/2, originX:'center', originY:'center', label:'Location', color:COLORS.amberLight, style:'pin', anim:{type:'pop',delay:0,duration:400} }));
+  canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
+});
+document.getElementById('addOrgChart').addEventListener('click', () => {
+  const sample = 'Emperor Meiji\n  Emperor Taisho\n    Emperor Showa\n      Emperor Akihito\n        Emperor Naruhito';
+  const obj = specToObject(O({ name:'Family tree', left:W/2, top:H/2, originX:'center', originY:'center', text:sample, color:COLORS.tealLight, anim:{type:'fade',delay:0,duration:500} }));
   canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
 });
 
