@@ -174,20 +174,38 @@ const TEMPLATES = {
     label: 'Category Cards',
     layers: () => {
       const items = ['National government','Local government','Residents','Tourism business','Travellers'];
-      const n = items.length, cardW=300, cardH=280, gap=40;
-      const totalW = n*cardW+(n-1)*gap, startX = 960-totalW/2, top=420;
+      const n = items.length, cx = W/2, rel = W/1920, portrait = H > W;
       const out = [
-        T('WHO IS "JAPAN" IN THIS STORY?', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:190, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-        T('"Japan wants..." always means one of these:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:250, width:1600, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+        T('WHO IS "JAPAN" IN THIS STORY?', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:190, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('"Japan wants..." always means one of these:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:cx, top:250, width:1600*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
       ];
-      items.forEach((label,i) => {
-        const x = startX+i*(cardW+gap), delay = 1000+i*150, color = CARD_PALETTE[i%CARD_PALETTE.length];
-        out.push(R({ name:`Card ${i+1}`, left:x, top, width:cardW, height:cardH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:'rgba(255,255,255,0.16)', strokeWidth:2, anim:{type:'pop',delay,duration:500} }));
-        out.push(C({ name:`Card ${i+1} badge`, left:x+cardW/2, top:top+78, radius:40, fill:'rgba(255,255,255,0.1)', stroke:color, strokeWidth:3, originX:'center', originY:'center', anim:{type:'pop',delay:delay+50,duration:500} }));
-        out.push(T(String(i+1), { name:`Card ${i+1} number`, role:'display', fontWeight:700, fontSize:32, fill:color, left:x+cardW/2, top:top+78, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay+150,duration:400} }));
-        out.push(T(label, { name:`Card ${i+1} label`, role:'body', fontWeight:600, fontSize:22, fill:'#FFFFFF', left:x+cardW/2, top:top+165, width:cardW-30, originX:'center', textAlign:'center', anim:{type:'fade',delay:delay+100,duration:500} }));
-      });
-      out.push(T('Editorial framing — no single source', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:top+cardH+70, width:1400, originX:'center', textAlign:'center', anim:{type:'fade',delay:1000+items.length*150+150,duration:500} }));
+      let citationTop;
+      if (portrait) {
+        // Single stacked column: badge+number on the left of each row, label to the right —
+        // a side-by-side card grid doesn't fit a 1080-wide frame for 5 items.
+        const cardW = W*0.72, cardH = 130, gap = 24, startY = 380;
+        const x = cx - cardW/2;
+        items.forEach((label,i) => {
+          const y = startY+i*(cardH+gap), delay = 1000+i*150, color = CARD_PALETTE[i%CARD_PALETTE.length];
+          out.push(R({ name:`Card ${i+1}`, left:x, top:y, width:cardW, height:cardH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:'rgba(255,255,255,0.16)', strokeWidth:2, anim:{type:'pop',delay,duration:500} }));
+          out.push(C({ name:`Card ${i+1} badge`, left:x+70, top:y+cardH/2, radius:34, fill:'rgba(255,255,255,0.1)', stroke:color, strokeWidth:3, originX:'center', originY:'center', anim:{type:'pop',delay:delay+50,duration:500} }));
+          out.push(T(String(i+1), { name:`Card ${i+1} number`, role:'display', fontWeight:700, fontSize:30, fill:color, left:x+70, top:y+cardH/2, width:60, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay+150,duration:400} }));
+          out.push(T(label, { name:`Card ${i+1} label`, role:'body', fontWeight:600, fontSize:24, fill:'#FFFFFF', left:x+140, top:y+cardH/2, width:cardW-160, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay:delay+100,duration:500} }));
+        });
+        citationTop = startY + n*(cardH+gap) - gap + 60;
+      } else {
+        const cardW=300*rel, cardH=280, gap=40*rel;
+        const totalW = n*cardW+(n-1)*gap, startX = cx-totalW/2, top=420;
+        items.forEach((label,i) => {
+          const x = startX+i*(cardW+gap), delay = 1000+i*150, color = CARD_PALETTE[i%CARD_PALETTE.length];
+          out.push(R({ name:`Card ${i+1}`, left:x, top, width:cardW, height:cardH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:'rgba(255,255,255,0.16)', strokeWidth:2, anim:{type:'pop',delay,duration:500} }));
+          out.push(C({ name:`Card ${i+1} badge`, left:x+cardW/2, top:top+78, radius:40, fill:'rgba(255,255,255,0.1)', stroke:color, strokeWidth:3, originX:'center', originY:'center', anim:{type:'pop',delay:delay+50,duration:500} }));
+          out.push(T(String(i+1), { name:`Card ${i+1} number`, role:'display', fontWeight:700, fontSize:32, fill:color, left:x+cardW/2, top:top+78, width:70, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay+150,duration:400} }));
+          out.push(T(label, { name:`Card ${i+1} label`, role:'body', fontWeight:600, fontSize:22, fill:'#FFFFFF', left:x+cardW/2, top:top+165, width:cardW-30, originX:'center', textAlign:'center', anim:{type:'fade',delay:delay+100,duration:500} }));
+        });
+        citationTop = top+cardH+70;
+      }
+      out.push(T('Editorial framing — no single source', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:citationTop, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1000+items.length*150+150,duration:500} }));
       return out;
     },
   },
@@ -238,34 +256,54 @@ const TEMPLATES = {
       const leftLines = ['Pay tax-free price at the shop', 'Show your passport at checkout'];
       const rightLines = ['Pay full price with tax', 'Customs confirms your export', 'Shop or provider refunds you'];
       const leftColor = COLORS.tealLight, rightColor = COLORS.amberLight;
-      const panelW = 740, gap = 140, top = 420;
-      const leftX = 960 - gap/2 - panelW, rightX = 960 + gap/2;
+      const cx = W/2, rel = W/1920, portrait = H > W;
       const panelH = 120 + Math.max(leftLines.length, rightLines.length) * 90 + 40;
       const LEFT_START = 950, RIGHT_START = 1500;
+
+      // Builds one panel's full contents (frame, label pill, optional flag pill, bulleted
+      // lines) at a given top-left — shared between the side-by-side and stacked layouts so
+      // the panel design only lives in one place.
+      function panelBlock(px, py, panelW, color, labelText, flagText, lines, delay, key) {
+        const b = [
+          R({ name:`${key} panel`, left:px, top:py, width:panelW, height:panelH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:color, strokeWidth:3, anim:{type:'pop',delay,duration:550} }),
+          R({ name:`${key} label pill`, left:px+28, top:py+26, width:labelText.length*11+50, height:40, rx:20, ry:20, fill:color, anim:{type:'pop',delay,duration:550} }),
+          T(labelText, { name:`${key} label text`, role:'body', fontWeight:700, fontSize:18, fill:'#12213B', left:px+28+(labelText.length*11+50)/2, top:py+26+20, width:labelText.length*11+50, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay,duration:550} }),
+        ];
+        if (flagText) {
+          const flagW = flagText.length*11+40;
+          b.push(R({ name:`${key} flag pill`, left:px+panelW-flagW-20, top:py+26, width:flagW, height:36, rx:18, ry:18, fill:'rgba(0,0,0,0.28)', stroke:color, strokeWidth:2, anim:{type:'pop',delay,duration:550} }));
+          b.push(T(flagText, { name:`${key} flag text`, role:'body', fontWeight:700, fontSize:18, fill:color, left:px+panelW-flagW-20+flagW/2, top:py+26+18, width:flagW, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay,duration:550} }));
+        }
+        lines.forEach((line, i) => {
+          const y = py+96+i*90, ld = delay+250+i*120;
+          b.push(C({ name:`${key} bullet ${i+1}`, left:px+44, top:y, radius:6, fill:color, originX:'center', originY:'center', anim:{type:'fade',delay:ld,duration:400} }));
+          b.push(T(line, { name:`${key} line ${i+1}`, role:'body', fontSize:24, fill:'#FFFFFF', left:px+44+26, top:y, width:panelW-100, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay:ld,duration:400} }));
+        });
+        return b;
+      }
+
       const out = [
-        T('TAX-FREE SHOPPING, BEFORE AND AFTER', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:190, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-        T('How the refund process changes:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:250, width:1500, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
-        R({ name:'Left panel', left:leftX, top, width:panelW, height:panelH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:leftColor, strokeWidth:3, anim:{type:'pop',delay:LEFT_START,duration:550} }),
-        R({ name:'Left label pill', left:leftX+28, top:top+26, width:150, height:40, rx:20, ry:20, fill:leftColor, anim:{type:'pop',delay:LEFT_START,duration:550} }),
-        T('CURRENT', { name:'Left label text', role:'body', fontWeight:700, fontSize:18, fill:'#12213B', left:leftX+28+75, top:top+26+20, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:LEFT_START,duration:550} }),
-        R({ name:'Right panel', left:rightX, top, width:panelW, height:panelH, rx:16, ry:16, fill:'rgba(255,255,255,0.06)', stroke:rightColor, strokeWidth:3, anim:{type:'pop',delay:RIGHT_START,duration:550} }),
-        R({ name:'Right label pill', left:rightX+28, top:top+26, width:200, height:40, rx:20, ry:20, fill:rightColor, anim:{type:'pop',delay:RIGHT_START,duration:550} }),
-        T('FROM 1 NOV 2026', { name:'Right label text', role:'body', fontWeight:700, fontSize:18, fill:'#12213B', left:rightX+28+100, top:top+26+20, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START,duration:550} }),
-        R({ name:'Right flag pill', left:rightX+panelW-190, top:top+26, width:170, height:36, rx:18, ry:18, fill:'rgba(0,0,0,0.28)', stroke:rightColor, strokeWidth:2, anim:{type:'pop',delay:RIGHT_START,duration:550} }),
-        T('FUTURE RULE', { name:'Right flag text', role:'body', fontWeight:700, fontSize:18, fill:rightColor, left:rightX+panelW-190+85, top:top+26+18, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START,duration:550} }),
-        T('→', { name:'Arrow', role:'display', fontSize:60, fill:'rgba(255,255,255,0.55)', left:960, top:top+panelH/2, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START-100,duration:400} }),
-        T('National Tax Agency guidance · effective 1 November 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:top+panelH+66, width:1600, originX:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START+250+Math.max(leftLines.length,rightLines.length)*120+200,duration:500} }),
+        T('TAX-FREE SHOPPING, BEFORE AND AFTER', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:190, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('How the refund process changes:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:cx, top:250, width:1500*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
       ];
-      leftLines.forEach((line, i) => {
-        const y = top+96+i*90, delay = LEFT_START+250+i*120;
-        out.push(C({ name:`Left bullet ${i+1}`, left:leftX+44, top:y, radius:6, fill:leftColor, originX:'center', originY:'center', anim:{type:'fade',delay,duration:400} }));
-        out.push(T(line, { name:`Left line ${i+1}`, role:'body', fontSize:24, fill:'#FFFFFF', left:leftX+44+26, top:y, width:panelW-100, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
-      });
-      rightLines.forEach((line, i) => {
-        const y = top+96+i*90, delay = RIGHT_START+250+i*120;
-        out.push(C({ name:`Right bullet ${i+1}`, left:rightX+44, top:y, radius:6, fill:rightColor, originX:'center', originY:'center', anim:{type:'fade',delay,duration:400} }));
-        out.push(T(line, { name:`Right line ${i+1}`, role:'body', fontSize:24, fill:'#FFFFFF', left:rightX+44+26, top:y, width:panelW-100, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
-      });
+      let citationTop;
+      if (portrait) {
+        // Stack the two panels top/bottom with a downward arrow — side-by-side panels
+        // (740px each) don't fit a 1080-wide frame.
+        const panelW = W*0.8, px = cx-panelW/2, topY = 380, bottomY = topY+panelH+130;
+        out.push(...panelBlock(px, topY, panelW, leftColor, 'CURRENT', null, leftLines, LEFT_START, 'Left'));
+        out.push(...panelBlock(px, bottomY, panelW, rightColor, 'FROM 1 NOV 2026', 'FUTURE RULE', rightLines, RIGHT_START, 'Right'));
+        out.push(T('↓', { name:'Arrow', role:'display', fontSize:60, fill:'rgba(255,255,255,0.55)', left:cx, top:topY+panelH+65, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START-100,duration:400} }));
+        citationTop = bottomY+panelH+66;
+      } else {
+        const panelW = 740*rel, gap = 140*rel, top = 420;
+        const leftX = cx - gap/2 - panelW, rightX = cx + gap/2;
+        out.push(...panelBlock(leftX, top, panelW, leftColor, 'CURRENT', null, leftLines, LEFT_START, 'Left'));
+        out.push(...panelBlock(rightX, top, panelW, rightColor, 'FROM 1 NOV 2026', 'FUTURE RULE', rightLines, RIGHT_START, 'Right'));
+        out.push(T('→', { name:'Arrow', role:'display', fontSize:60, fill:'rgba(255,255,255,0.55)', left:cx, top:top+panelH/2, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START-100,duration:400} }));
+        citationTop = top+panelH+66;
+      }
+      out.push(T('National Tax Agency guidance · effective 1 November 2026', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:citationTop, width:1600*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:RIGHT_START+250+Math.max(leftLines.length,rightLines.length)*120+200,duration:500} }));
       return out;
     },
   },
@@ -273,25 +311,44 @@ const TEMPLATES = {
     label: 'Process Flow',
     layers: () => {
       const steps = ['Buy at full price', 'Customs confirms export', 'Shop or provider refunds you', 'Refund reaches your card'];
-      const n = steps.length, top = 420;
-      const boxW = Math.min(300, Math.floor((1760 - (n-1)*90) / n)), boxH = 190, gap = 90;
-      const totalW = n*boxW + (n-1)*gap, startX = 960 - totalW/2, y = top + 30;
+      const n = steps.length, cx = W/2, rel = W/1920, portrait = H > W;
       const out = [
-        T('HOW THE REFUND ACTUALLY WORKS', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:960, top:190, width:1300, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-        T('One receipt moves through four steps:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:960, top:250, width:1500, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+        T('HOW THE REFUND ACTUALLY WORKS', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:190, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('One receipt moves through four steps:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:cx, top:250, width:1500*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
       ];
-      steps.forEach((s, i) => {
-        const x = startX + i*(boxW+gap), delay = 1000 + i*350, color = CARD_PALETTE[i % CARD_PALETTE.length];
-        out.push(R({ name:`Step ${i+1} box`, left:x, top:y, width:boxW, height:boxH, rx:14, ry:14, fill:'rgba(255,255,255,0.07)', stroke:color, strokeWidth:2.5, anim:{type:'pop',delay,duration:500} }));
-        out.push(T('0'+(i+1), { name:`Step ${i+1} number`, role:'display', fontWeight:700, fontSize:26, fill:color, left:x+20, top:y+16, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
-        out.push(T(s, { name:`Step ${i+1} label`, role:'body', fontSize:22, fill:'#FFFFFF', left:x+boxW/2, top:y+108, width:boxW-36, originX:'center', textAlign:'center', anim:{type:'fade',delay,duration:500} }));
-        if (i > 0) {
-          const prevRight = startX + (i-1)*(boxW+gap) + boxW;
-          out.push(T('→', { name:`Arrow ${i}`, role:'display', fontSize:36, fill:'rgba(255,255,255,0.55)', left:prevRight+gap/2, top:y+boxH/2, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay-150,duration:350} }));
-        }
-      });
+      let citationTop;
+      if (portrait) {
+        // Vertical stepped list with a downward arrow — a horizontal row of 4 boxes doesn't
+        // fit a 1080-wide frame.
+        const boxW = W*0.72, boxH = 150, gap = 40, startY = 380, x = cx-boxW/2;
+        steps.forEach((s, i) => {
+          const y = startY+i*(boxH+gap), delay = 1000+i*350, color = CARD_PALETTE[i % CARD_PALETTE.length];
+          out.push(R({ name:`Step ${i+1} box`, left:x, top:y, width:boxW, height:boxH, rx:14, ry:14, fill:'rgba(255,255,255,0.07)', stroke:color, strokeWidth:2.5, anim:{type:'pop',delay,duration:500} }));
+          out.push(T('0'+(i+1), { name:`Step ${i+1} number`, role:'display', fontWeight:700, fontSize:26, fill:color, left:x+24, top:y+18, width:60, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
+          out.push(T(s, { name:`Step ${i+1} label`, role:'body', fontSize:24, fill:'#FFFFFF', left:x+boxW/2, top:y+boxH/2+16, width:boxW-70, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay,duration:500} }));
+          if (i > 0) {
+            const prevBottom = startY+(i-1)*(boxH+gap)+boxH;
+            out.push(T('↓', { name:`Arrow ${i}`, role:'display', fontSize:32, fill:'rgba(255,255,255,0.55)', left:cx, top:prevBottom+gap/2, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay-150,duration:350} }));
+          }
+        });
+        citationTop = startY+(n-1)*(boxH+gap)+boxH+70;
+      } else {
+        const boxW = Math.min(300, Math.floor((1760*rel - (n-1)*90*rel) / n)), boxH = 190, gap = 90*rel;
+        const totalW = n*boxW + (n-1)*gap, startX = cx - totalW/2, y = 450;
+        steps.forEach((s, i) => {
+          const x = startX + i*(boxW+gap), delay = 1000 + i*350, color = CARD_PALETTE[i % CARD_PALETTE.length];
+          out.push(R({ name:`Step ${i+1} box`, left:x, top:y, width:boxW, height:boxH, rx:14, ry:14, fill:'rgba(255,255,255,0.07)', stroke:color, strokeWidth:2.5, anim:{type:'pop',delay,duration:500} }));
+          out.push(T('0'+(i+1), { name:`Step ${i+1} number`, role:'display', fontWeight:700, fontSize:26, fill:color, left:x+20, top:y+16, width:60, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
+          out.push(T(s, { name:`Step ${i+1} label`, role:'body', fontSize:22, fill:'#FFFFFF', left:x+boxW/2, top:y+108, width:boxW-36, originX:'center', textAlign:'center', anim:{type:'fade',delay,duration:500} }));
+          if (i > 0) {
+            const prevRight = startX + (i-1)*(boxW+gap) + boxW;
+            out.push(T('→', { name:`Arrow ${i}`, role:'display', fontSize:36, fill:'rgba(255,255,255,0.55)', left:prevRight+gap/2, top:y+boxH/2, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay-150,duration:350} }));
+          }
+        });
+        citationTop = y+boxH+80;
+      }
       const LAST = 1000 + (n-1)*350 + 500;
-      out.push(T('National Tax Agency guidance', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:960, top:y+boxH+80, width:1600, originX:'center', textAlign:'center', anim:{type:'fade',delay:LAST+150,duration:500} }));
+      out.push(T('National Tax Agency guidance', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:citationTop, width:1600*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:LAST+150,duration:500} }));
       return out;
     },
   },
