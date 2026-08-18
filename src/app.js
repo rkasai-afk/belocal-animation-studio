@@ -352,6 +352,101 @@ const TEMPLATES = {
       return out;
     },
   },
+  lowerthird: {
+    label: 'Lower-Third (Speaker ID)',
+    layers: () => {
+      const barW = Math.min(700, W*0.55), barH = 110;
+      const x = W*0.06, y = H*0.82;
+      return [
+        R({ name:'Accent bar', left:x, top:y, width:8, height:barH, fill:COLORS.tealLight, anim:{type:'slideFromLeft',delay:200,duration:500} }),
+        R({ name:'Name bar', left:x+8, top:y, width:barW, height:barH, fill:'rgba(15,25,45,0.85)', anim:{type:'slideFromLeft',delay:150,duration:550} }),
+        T('Speaker Name', { name:'Name', role:'display', fontWeight:700, fontSize:32, fill:'#FFFFFF', left:x+8+28, top:y+24, width:barW-56, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay:500,duration:450} }),
+        T('Role or location', { name:'Subtitle', role:'body', fontSize:20, fill:COLORS.tealLight, left:x+8+28, top:y+68, width:barW-56, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay:600,duration:450} }),
+      ];
+    },
+  },
+  quote: {
+    label: 'Quote / Testimonial',
+    layers: () => {
+      const cx = W/2, boxW = Math.min(1300, W*0.8);
+      return [
+        T('“', { name:'Quote mark', role:'display', fontWeight:900, fontSize:150, fill:COLORS.tealLight, left:cx, top:210, width:200, originX:'center', originY:'center', textAlign:'center', anim:{type:'pop',delay:200,duration:500} }),
+        T('The best trips leave room to be surprised.', { name:'Quote text', role:'display', fontWeight:700, fontSize:42, fill:'#FFFFFF', left:cx, top:420, width:boxW, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:550,duration:600} }),
+        R({ name:'Rule', left:cx, top:610, width:80, height:4, fill:COLORS.amberLight, originX:'center', anim:{type:'pop',delay:1300,duration:400} }),
+        T('Maya Tanaka', { name:'Attribution name', role:'body', fontWeight:700, fontSize:26, fill:'#FFFFFF', left:cx, top:660, width:boxW, originX:'center', originY:'top', textAlign:'center', anim:{type:'fade',delay:1500,duration:500} }),
+        T('Tour guide, Kyoto', { name:'Attribution role', role:'body', fontSize:20, fill:'rgba(255,255,255,0.65)', left:cx, top:702, width:boxW, originX:'center', originY:'top', textAlign:'center', anim:{type:'fade',delay:1600,duration:500} }),
+      ];
+    },
+  },
+  timeline: {
+    label: 'Timeline',
+    layers: () => {
+      const events = [
+        { date:'2019', text:'Idea first proposed' },
+        { date:'2022', text:'Pilot program launched' },
+        { date:'2024', text:'National rollout begins' },
+        { date:'2026', text:'Full implementation' },
+      ];
+      const n = events.length, cx = W/2, rel = W/1920, portrait = H > W;
+      const out = [
+        T('A TIMELINE OF THE POLICY', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:190, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('How we got here:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:cx, top:250, width:1500*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+      ];
+      let citationTop;
+      if (portrait) {
+        // Vertical line down the left with date + description to the right of each node —
+        // a horizontal timeline doesn't fit a 1080-wide frame for 4+ events.
+        const lineX = W*0.14, startY = 400, rowH = 280, textW = W-lineX-40-60;
+        out.push(R({ name:'Timeline line', left:lineX, top:startY, width:4, height:(n-1)*rowH, fill:'rgba(255,255,255,0.25)', anim:{type:'fade',delay:700,duration:600} }));
+        events.forEach((e,i) => {
+          const y = startY+i*rowH, delay = 1000+i*300, color = CARD_PALETTE[i%CARD_PALETTE.length];
+          out.push(C({ name:`Node ${i+1}`, left:lineX, top:y, radius:14, fill:color, originX:'center', originY:'center', anim:{type:'pop',delay,duration:400} }));
+          out.push(T(e.date, { name:`Date ${i+1}`, role:'display', fontWeight:700, fontSize:30, fill:color, left:lineX+40, top:y-30, width:textW, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay:delay+100,duration:400} }));
+          out.push(T(e.text, { name:`Event ${i+1}`, role:'body', fontSize:24, fill:'#FFFFFF', left:lineX+40, top:y+14, width:textW, originX:'left', originY:'top', textAlign:'left', anim:{type:'fade',delay:delay+200,duration:400} }));
+        });
+        citationTop = startY+(n-1)*rowH+120;
+      } else {
+        const lineY = 560, startX = W*0.14, endX = W-W*0.14, stepX = (endX-startX)/(n-1), textW = stepX-20;
+        out.push(R({ name:'Timeline line', left:startX, top:lineY, width:endX-startX, height:4, fill:'rgba(255,255,255,0.25)', anim:{type:'fade',delay:700,duration:600} }));
+        events.forEach((e,i) => {
+          const x = startX+i*stepX, delay = 1000+i*300, color = CARD_PALETTE[i%CARD_PALETTE.length];
+          out.push(C({ name:`Node ${i+1}`, left:x, top:lineY, radius:14, fill:color, originX:'center', originY:'center', anim:{type:'pop',delay,duration:400} }));
+          out.push(T(e.date, { name:`Date ${i+1}`, role:'display', fontWeight:700, fontSize:28, fill:color, left:x, top:lineY-60, width:textW, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay+100,duration:400} }));
+          out.push(T(e.text, { name:`Event ${i+1}`, role:'body', fontSize:22, fill:'#FFFFFF', left:x, top:lineY+60, width:textW, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay+200,duration:400} }));
+        });
+        citationTop = lineY+160;
+      }
+      out.push(T('Citation or source', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:citationTop, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1000+n*300+300,duration:500} }));
+      return out;
+    },
+  },
+  listicle: {
+    label: 'Listicle / Ranking',
+    layers: () => {
+      const items = [
+        'Kyoto — historic temples and gardens',
+        'Osaka — street food capital',
+        'Hokkaido — powder snow and hot springs',
+        'Okinawa — subtropical beaches',
+        'Tokyo — neon and tradition side by side',
+      ];
+      const cx = W/2, rel = W/1920;
+      const listW = 1200*rel, itemH = 110, startY = 400, startX = cx-listW/2;
+      const out = [
+        T('WHERE TO GO FIRST', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:200, width:1300*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        T('Top 5 regions for first-time visitors:', { name:'Headline', role:'display', fontWeight:700, fontSize:44, fill:'#FFFFFF', left:cx, top:260, width:1500*rel, textAlign:'center', originX:'center', anim:{type:'fade',delay:550,duration:600} }),
+      ];
+      items.forEach((it,i) => {
+        const y = startY+i*itemH, delay = 1000+i*200, color = CARD_PALETTE[i%CARD_PALETTE.length];
+        out.push(R({ name:`Row ${i+1} bg`, left:startX, top:y, width:listW, height:itemH-16, rx:12, ry:12, fill:'rgba(255,255,255,0.05)', anim:{type:'fade',delay,duration:400} }));
+        out.push(C({ name:`Row ${i+1} badge`, left:startX+45, top:y+(itemH-16)/2, radius:30, fill:'rgba(255,255,255,0.1)', stroke:color, strokeWidth:3, originX:'center', originY:'center', anim:{type:'pop',delay:delay+100,duration:400} }));
+        out.push(T(String(i+1), { name:`Row ${i+1} number`, role:'display', fontWeight:700, fontSize:26, fill:color, left:startX+45, top:y+(itemH-16)/2, width:60, originX:'center', originY:'center', textAlign:'center', anim:{type:'fade',delay:delay+150,duration:400} }));
+        out.push(T(it, { name:`Row ${i+1} text`, role:'body', fontSize:24, fill:'#FFFFFF', left:startX+90, top:y+(itemH-16)/2, width:listW-90-40, originX:'left', originY:'center', textAlign:'left', anim:{type:'fade',delay,duration:400} }));
+      });
+      out.push(T('Editorial ranking — order simplified for pacing', { name:'Citation', role:'body', fontSize:24, fill:'rgba(255,255,255,0.65)', left:cx, top:startY+items.length*itemH+50, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1000+items.length*200+250,duration:500} }));
+      return out;
+    },
+  },
 };
 
 /* ============ LAYER CREATION FROM SPEC ============ */
