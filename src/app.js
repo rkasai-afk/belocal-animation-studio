@@ -39,16 +39,54 @@ function resolveWeight(role) {
 }
 
 /* ============ CANVAS SETUP ============ */
-const W = 1920, H = 1080;
+const ASPECT_PRESETS = {
+  landscape: { w:1920, h:1080, label:'Widescreen', hint:'YouTube / standard video' },
+  vertical:  { w:1080, h:1920, label:'Vertical',   hint:'Shorts / Reels / TikTok' },
+  square:    { w:1080, h:1080, label:'Square',     hint:'Feed post' },
+};
+let currentAspect = 'landscape';
+let W = ASPECT_PRESETS[currentAspect].w, H = ASPECT_PRESETS[currentAspect].h;
+let activeTemplateId = null;
 const canvas = new fabric.Canvas('fcanvas', { width: W, height: H, backgroundColor: '#1F3864', preserveObjectStacking: true });
 function fitCanvasToWrap() {
   const wrap = document.getElementById('stageWrap');
-  const dispW = Math.min(860, wrap.parentElement.clientWidth || 860);
-  const dispH = dispW * H / W;
-  canvas.setDimensions({ width: dispW, height: dispH }, { cssOnly: true });
+  const availW = Math.min(860, (wrap.parentElement && wrap.parentElement.clientWidth) || 860);
+  const availH = Math.max(320, window.innerHeight - 260);
+  const scale = Math.min(availW / W, availH / H);
+  canvas.setDimensions({ width: W * scale, height: H * scale }, { cssOnly: true });
 }
 fitCanvasToWrap();
 window.addEventListener('resize', fitCanvasToWrap);
+
+function setAspect(id) {
+  if (!ASPECT_PRESETS[id] || id === currentAspect) return;
+  currentAspect = id;
+  W = ASPECT_PRESETS[id].w; H = ASPECT_PRESETS[id].h;
+  canvas.setDimensions({ width: W, height: H });
+  fitCanvasToWrap();
+  renderAspectButtons();
+  if (activeTemplateId && activeTemplateId !== 'blank') {
+    loadTemplate(activeTemplateId);
+    setStatus('Video shape changed — "' + TEMPLATES[activeTemplateId].label + '" reloaded to fit.');
+  } else {
+    refreshLayerList();
+    updateScrubRange();
+    setStatus('Video shape changed. Existing layers keep their position — reposition or reload a template to fit.');
+  }
+}
+function renderAspectButtons() {
+  const wrap = document.getElementById('aspectGrid');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  Object.keys(ASPECT_PRESETS).forEach(id => {
+    const p = ASPECT_PRESETS[id];
+    const btn = document.createElement('button');
+    btn.className = 'aspect-btn' + (id === currentAspect ? ' active' : '');
+    btn.innerHTML = p.label + ' <span style="font-weight:400;opacity:0.7;">— ' + p.hint + '</span>';
+    btn.addEventListener('click', () => setAspect(id));
+    wrap.appendChild(btn);
+  });
+}
 
 let bgMediaObj = null;   // fabric.Image for background (image or video-backed)
 let bgVideoEl = null;    // underlying <video> element if background is a video
@@ -291,6 +329,7 @@ function specToObject(spec) {
 }
 
 function loadTemplate(id) {
+  activeTemplateId = id;
   canvas.getObjects().slice().forEach(o => { if (o !== bgMediaObj) canvas.remove(o); });
   const specs = TEMPLATES[id].layers();
   specs.forEach(spec => canvas.add(specToObject(spec)));
@@ -964,6 +1003,7 @@ function finishRecording() { if (recorder && recorder.state !== 'inactive') reco
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
 
 /* ============ INIT ============ */
+renderAspectButtons();
 renderTemplateGrid();
 renderFontPresets();
 renderBgColorSwatches();
