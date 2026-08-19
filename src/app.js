@@ -1596,6 +1596,7 @@ document.getElementById('btnRecord').addEventListener('click', () => {
     setStatus('Downloaded belocal_scene.webm ✓');
     document.getElementById('btnRecord').disabled = false;
     backToEdit();
+    sendDocHandoffAsset(blob);
   };
   recorder.start();
   isRecording = true;
@@ -1620,3 +1621,44 @@ updateScrubRange();
 const loadPromises = FONT_FACE_LIST.map(([fam,w]) => document.fonts.load(`${w} 40px "${fam}"`).catch(()=>{}));
 Promise.all(loadPromises).then(() => document.fonts.ready).then(() => { setStatus('Ready.'); canvas.requestRenderAll(); });
 setTimeout(() => { if (document.getElementById('status').textContent === 'Loading…') { setStatus('Ready.'); canvas.requestRenderAll(); } }, 2500);
+
+/* ============ DOCUMENTARY STUDIO HANDOFF ============
+   Purely additive: when this tool is opened by Documentary Studio (production/) with
+   docHandoff=1 in the URL, show which episode/beat this graphic is for, and — once the
+   user clicks Record & Download — also postMessage the recorded WebM back to the opener so
+   it can attach automatically as a Graphic asset. Standalone use (no query params) is
+   completely unaffected. See production/integration.js for the opener side. */
+const docParams = new URLSearchParams(window.location.search);
+const docContext = docParams.get('docHandoff') === '1' ? {
+  episodeId: docParams.get('episodeId') || '',
+  beatId: docParams.get('beatId') || '',
+  title: docParams.get('title') || '',
+  notes: docParams.get('notes') || '',
+  source: docParams.get('source') || '',
+} : null;
+
+if (docContext) {
+  const banner = document.getElementById('docHandoffBanner');
+  const bits = [`Creating a graphic for Documentary Studio${docContext.title ? `: <strong>${docContext.title}</strong>` : ''}`];
+  if (docContext.notes) bits.push(`Visual instruction: ${docContext.notes}`);
+  if (docContext.source) bits.push(`Source note: ${docContext.source}`);
+  bits.push('When you click "Record &amp; Download" below, the result is sent back to that beat automatically.');
+  banner.innerHTML = bits.join(' — ');
+  banner.style.display = 'block';
+}
+
+function sendDocHandoffAsset(blob) {
+  if (!docContext || !window.opener) return;
+  try {
+    window.opener.postMessage({
+      type: 'doc-asset',
+      kind: 'graphic',
+      filename: 'belocal_scene.webm',
+      mime: 'video/webm',
+      blob,
+      docContext,
+    }, window.location.origin);
+  } catch (err) {
+    // Best-effort only — the user still has the file they just downloaded.
+  }
+}

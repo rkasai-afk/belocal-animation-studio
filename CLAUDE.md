@@ -39,6 +39,11 @@ extra deploy config needed per tool:
 - **Animation Studio** — this editor, at `/` (source under `src/`, built to `index.html`).
 - **Auto Subtitles** — EN/JA video/audio → SRT, at `/subtitles/` (source and docs in
   `subtitles/`; see `subtitles/README.md` for that tool's own architecture notes).
+- **Documentary Studio** — episode planning, Edit Blueprint, Assets library and Fact Lock
+  for full documentaries (this is the tool that ties the other two into one workflow), at
+  `/production/` (source in `production/`; see `production/README.md` for that tool's own
+  architecture notes, including how it hands off to and receives files back from the other
+  two tools).
 
 **Global nav.** Every tool's page carries a `<nav class="global-nav">` bar linking to every
 other tool, so a visitor to any one of them can reach any other. There is deliberately no
@@ -113,13 +118,26 @@ subtitles/                    Auto Subtitles tool (EN/JA video/audio -> SRT for 
 tests/test_subtitles.js       Playwright regression for the Auto Subtitles tool: cue-
                                packing, editable preview, SRT export (via a stubbed Worker),
                                plus a best-effort real-pipeline check
+production/                    Documentary Studio (episode planning around the edit), served
+                               at /production/. Separate, independent tool — see "Multi-tool
+                               repo structure" above and production/README.md for its own
+                               architecture notes. No build step of its own; ES modules
+                               served directly, so it needs http(s), not file://, in tests.
+tests/test_production.js      Playwright regression for Documentary Studio: episode/beat
+                               CRUD, autosave, smart status derivation, drag reorder, asset
+                               upload/log/delete, Fact Lock claim/source status, progress
+                               math, Next Actions, global search, and the real cross-tool
+                               postMessage handoff with both the Animation Maker (a beat's
+                               "Create Graphic" round-trips a recorded WebM back as an
+                               attached asset) and Auto Subtitles (a voiceover blob is
+                               handed over automatically once that tab signals it's ready).
 ```
 
 ## Workflow
 
 1. Edit `src/app.js` (and `src/studio_v2_template.html` if the UI needs new elements).
 2. `npm run build` — regenerates `index.html`.
-3. `npm test` — runs build + all twelve Playwright suites headless. Every suite must end
+3. `npm test` — runs build + all fourteen Playwright suites headless. Every suite must end
    with `HAD ERROR: false` (no console/page errors). Read the printed assertions, not just
    the exit code — several tests print `OK`/`FAIL` inline rather than throwing.
 4. For anything visual (new template, layout change, animation timing), also actually look
@@ -286,6 +304,32 @@ tests/test_subtitles.js       Playwright regression for the Auto Subtitles tool:
   Because every entry point funnels through this one function, adding a new template or new
   composite layer kind needs zero safe-zone-specific code of its own.
 
+## Documentary Studio
+
+`production/` is a separate tool (episode planning around the edit — see "Multi-tool repo
+structure" above) with its own architecture, distinct from the animation editor's single-file
+constraint. Full detail lives in `production/README.md`; the essentials:
+
+- **Storage is IndexedDB, not localStorage or a server.** GitHub Pages only serves static
+  files, so there is no backend to call. `production/db.js` is the one module that touches
+  `indexedDB` — every view module goes through it, never `indexedDB` directly. Small assets
+  (thumbnails, recorded graphics, SRTs) are stored as real Blobs; raw footage is not assumed
+  to live in the browser at all — "Log Asset" records metadata with no file, for footage that
+  stays on disk/NAS and gets pulled into Resolve directly.
+- **Progress % and beat status are pure functions of stored data**, not hand-maintained flags
+  — see `production/progress.js` (`beatStatus()`, `computeEpisodeProgress()`,
+  `computeNextActions()`). If you add a new required-for-READY condition, add it there; don't
+  scatter status logic into view code.
+- **Cross-tool handoff uses `window.open()` + `postMessage()`**, not file download/re-upload,
+  because Documentary Studio and the other two tools share an origin. Documentary Studio opens
+  the other tool with `?docHandoff=1&...` context in the URL; that tool shows a banner and,
+  once it has something to hand back (a recorded WebM, a generated SRT), posts it to
+  `window.opener` as a Blob (structured-clone supports this directly, no base64 needed). This
+  is additive in both `src/app.js` and `subtitles/app.js` — opened normally (no query params),
+  neither tool's existing behavior changes at all. See `production/integration.js` for the
+  opener side and the `docHandoff`/`sendDocHandoffAsset` blocks near the end of the other two
+  tools' `app.js` files for the child side.
+
 ## Deferred / likely next asks
 
 Flagged to the user already as not-yet-built, in case they come back to them:
@@ -298,6 +342,11 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   a background map image), but genuine mapping (tiles, geocoding) is intentionally out of
   scope — it would need external requests, which the single-file/no-network architecture
   rules out categorically, not just as a matter of remaining effort.
+- **Documentary Studio** (`production/`) has its own deferred list — DOCX production-document
+  import, AI-assisted asset tagging/search, Evidence Visualizer, Map Builder, Data Story
+  Engine, Voiceover/Radio Cut assembly, and Final QC cross-checking — all intentionally
+  stubbed or left as future hooks rather than built fragile. See `production/README.md`
+  "Deferred / future modules" for what each one needs before it's real.
 
 ## Who this is for
 

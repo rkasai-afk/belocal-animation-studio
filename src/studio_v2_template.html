@@ -112,6 +112,7 @@ input[type=range] { width:100%; }
 .divider { height:1px; background:var(--line); margin:10px 0; }
 .file-drop { border:1.5px dashed var(--line); border-radius:8px; padding:14px; text-align:center; font-size:12.5px; color:var(--text-gray); cursor:pointer; }
 .file-drop:hover { border-color:var(--teal); }
+.doc-handoff-banner { margin:0 20px; background:#F2F9F9; border-color:var(--teal); color:var(--navy); }
 </style>
 </head>
 <body>
@@ -123,6 +124,7 @@ input[type=range] { width:100%; }
   <span class="global-nav-brand">BeLocal Tools</span>
   <span class="current">Animation Studio</span>
   <a href="./subtitles/">Auto Subtitles</a>
+  <a href="./production/">Documentary Studio</a>
 </nav>
 
 <header>
@@ -135,6 +137,12 @@ input[type=range] { width:100%; }
     <button id="modePreview">Preview</button>
   </div>
 </header>
+
+<!-- Populated by app.js only when opened from Documentary Studio with docHandoff=1 in the
+     URL — informational context banner, hidden otherwise. See the "docHandoff" block at the
+     bottom of app.js for how the beat context is read and how the recorded export is handed
+     back via window.opener.postMessage(). -->
+<div id="docHandoffBanner" class="hint-strip doc-handoff-banner" style="display:none;"></div>
 
 <div class="layout">
   <div class="stage-col">
