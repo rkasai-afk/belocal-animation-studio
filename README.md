@@ -7,6 +7,12 @@ browser, or use the live version.
 
 **Live:** http://www.animate.adaptinc.jp/
 
+Also part of this repo: [**Auto Subtitles**](./subtitles/) — upload a video/audio file
+(English or Japanese), get back an SRT to import into CapCut. Runs entirely in the browser
+(no server, no account) using an in-browser Whisper model. Live at
+http://www.animate.adaptinc.jp/subtitles/ — see [`subtitles/README.md`](./subtitles/README.md)
+for how it works.
+
 ## For editors (using the tool)
 
 Just open `index.html`, or the live URL above. Pick a template, drag things around, hit

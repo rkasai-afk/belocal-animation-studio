@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto Subtitles — BeLocal</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<header>
+  <h1>Auto Subtitles</h1>
+  <p>Upload a video or audio file, get an SRT you can import into CapCut.</p>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="row">
+      <div class="field">
+        <label for="fileInput">Video or audio file</label>
+        <input type="file" id="fileInput" accept="video/*,audio/*">
+      </div>
+      <div class="field">
+        <label for="langSelect">Language</label>
+        <select id="langSelect">
+          <option value="en">English</option>
+          <option value="ja">Japanese</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="modelSelect">Quality</label>
+        <select id="modelSelect">
+          <option value="fast">Fast (smaller download, rougher draft)</option>
+          <option value="balanced" selected>Balanced (recommended)</option>
+          <option value="accurate">Accurate (larger download, best for Japanese)</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px;">
+      <button id="generateBtn" disabled>Generate Subtitles</button>
+      <span class="status" id="statusLine"></span>
+    </div>
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-bar"><div id="progressFill"></div></div>
+      <div class="progress-label" id="progressLabel"></div>
+    </div>
+    <p class="note">
+      The speech model downloads to your browser the first time you use it (once cached,
+      later visits skip the download). Everything runs on your own device — the file never
+      leaves your computer. Works best in Chrome or Edge. Longer files take longer to
+      process, especially without a GPU-capable browser.
+    </p>
+  </div>
+
+  <div class="panel" id="resultsPanel" style="display:none;">
+    <div class="row" style="justify-content:space-between;">
+      <label style="margin:0;">Review &amp; edit before exporting</label>
+      <div class="actions">
+        <button class="secondary" id="downloadBtn">Download .srt</button>
+      </div>
+    </div>
+    <div id="cueList"></div>
+  </div>
+</main>
+
+<footer>
+  Part of <a href="../">BeLocal Animation Studio</a>
+</footer>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
