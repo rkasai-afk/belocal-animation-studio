@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeLocal Documentary Studio</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<!-- When adding a new tool, add its link here AND in the matching nav in every other tool's
+     own page (src/studio_v2_template.html, subtitles/index.html) — there's no shared nav
+     component, by design (see CLAUDE.md "Multi-tool repo structure"). -->
+<nav class="global-nav">
+  <span class="global-nav-brand">BeLocal Tools</span>
+  <span class="current">Documentary Studio</span>
+  <a href="../">Animation Studio</a>
+  <a href="../subtitles/">Auto Subtitles</a>
+</nav>
+
+<div id="app">
+  <header class="app-header">
+    <div class="brand">
+      <h1>BeLocal Documentary Studio</h1>
+      <p>Everything around the edit — DaVinci Resolve stays the editor.</p>
+    </div>
+    <div class="search-wrap">
+      <input id="globalSearch" type="text" placeholder="Search episodes, beats, assets, sources… (Ctrl/Cmd+K)" autocomplete="off">
+      <div id="searchResults" class="search-results"></div>
+    </div>
+  </header>
+
+  <nav class="main-nav" id="mainNav">
+    <button data-nav="episodes" class="nav-btn active">Episodes</button>
+    <button data-nav="edit" class="nav-btn">Edit</button>
+    <button data-nav="assets" class="nav-btn">Assets</button>
+    <button data-nav="factcheck" class="nav-btn">Fact Check</button>
+  </nav>
+
+  <main id="main"></main>
+</div>
+
+<div id="toast" class="toast"></div>
+<div id="modalRoot"></div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

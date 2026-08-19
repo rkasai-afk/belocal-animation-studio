@@ -14,6 +14,55 @@ let selectedFile = null;
 let cues = [];
 let worker = null;
 
+// --- Documentary Studio handoff -------------------------------------------------------
+// Purely additive: when opened by Documentary Studio (production/) with docHandoff=1 in
+// the URL, this tool (a) shows which episode it's transcribing for, (b) accepts the
+// voiceover file handed over via postMessage instead of requiring a manual file pick, and
+// (c) sends the finished SRT back the same way once transcription completes, so it can be
+// attached as a Subtitle asset automatically. Opened normally (no query params), none of
+// this runs. See production/integration.js for the opener side.
+const docParams = new URLSearchParams(window.location.search);
+const docContext = docParams.get('docHandoff') === '1' ? {
+  episodeId: docParams.get('episodeId') || '',
+  title: docParams.get('title') || '',
+} : null;
+
+if (docContext) {
+  const banner = document.getElementById('docHandoffBanner');
+  banner.textContent = `Waiting for the voiceover from Documentary Studio${docContext.title ? ` (${docContext.title})` : ''}… once transcribed, the SRT is sent back automatically.`;
+  banner.style.display = 'block';
+  if (window.opener) {
+    window.addEventListener('message', (event) => {
+      if (event.origin !== window.location.origin) return;
+      const msg = event.data;
+      if (!msg || msg.type !== 'doc-audio') return;
+      selectedFile = new File([msg.blob], msg.filename || 'voiceover.wav', { type: msg.blob.type });
+      generateBtn.disabled = false;
+      banner.textContent = `Voiceover received from Documentary Studio: ${selectedFile.name}. Choose a language and click Generate Subtitles.`;
+    });
+    window.opener.postMessage({ type: 'doc-subtitles-ready' }, window.location.origin);
+  }
+}
+
+function sendDocHandoffAsset() {
+  if (!docContext || !window.opener || !cues.length) return;
+  const srt = buildSrt();
+  const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
+  const baseName = (selectedFile?.name || 'subtitles').replace(/\.[^.]+$/, '');
+  try {
+    window.opener.postMessage({
+      type: 'doc-asset',
+      kind: 'subtitle',
+      filename: `${baseName}.srt`,
+      mime: 'text/plain',
+      blob,
+      docContext,
+    }, window.location.origin);
+  } catch (err) {
+    // Best-effort only — the SRT is still visible/downloadable in this tab.
+  }
+}
+
 fileInput.addEventListener('change', () => {
   selectedFile = fileInput.files[0] || null;
   generateBtn.disabled = !selectedFile;
@@ -102,6 +151,7 @@ async function runTranscription() {
       cues = packCues(msg.chunks, language);
       renderCues();
       generateBtn.disabled = false;
+      sendDocHandoffAsset();
     } else if (msg.type === 'error') {
       setProgress(false);
       setStatus(`Transcription failed: ${msg.message}`, true);
