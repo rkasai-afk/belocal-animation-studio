@@ -8,7 +8,11 @@ one series. Built for a non-technical video editor to use directly — no instal
 account, no server.
 
 Canvas size is a per-project choice (Widescreen 16:9, Vertical 9:16, or Square 1:1 — see
-"Aspect ratio system" below), so it's no longer landscape-only.
+"Aspect ratio system" below), so it's no longer landscape-only. Layers can be grouped into
+one movable/alignable unit, the canvas background can be set fully transparent (for
+recording video with real alpha, to composite over other footage later), and Vertical scenes
+can show a platform "safe zone" guide (TikTok / Instagram Reels / YouTube Shorts) so text
+and faces don't end up hidden behind that app's own UI chrome.
 
 Live at `http://www.animate.adaptinc.jp/` (GitHub Pages, repo `rkasai-afk/belocal-animation-studio`).
 
@@ -60,6 +64,20 @@ tests/test_v9.js              Playwright regression: Map/Location Pin quick-add,
 tests/test_v10.js             Playwright regression: Org/Family Tree quick-add, branching
                                (not just linear-chain) layout math verified directly via
                                parseOrgTree()/layoutOrgTree(), color edits, save/load
+tests/test_v11.js             Playwright regression: layer Group/Ungroup (bounding box
+                               matches pre-group union, group aligns as one unit, composite
+                               layers like Dot-Grid can't be ungrouped), save/load with a
+                               group in the scene, and the Vertical squished-canvas fix
+                               re-checked at a realistic 1440x840 viewport
+tests/test_v12.js             Playwright regression: transparent background swatch, its
+                               explanatory note, save/load round-trip, a recorded WebM's
+                               actual decoded pixel alpha (real transparency, not just an
+                               editor preview), and the canvas frame outline/shadow
+tests/test_v13.js             Playwright regression: the Vertical-only safe-zone guide
+                               (TikTok/Instagram Reels/YouTube Shorts) — chip gating outside
+                               Vertical, per-platform band percentages, reset-to-None on
+                               leaving Vertical, and a recorded WebM's decoded pixels
+                               confirming the guide is never baked into output
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -69,11 +87,11 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
 
 1. Edit `src/app.js` (and `src/studio_v2_template.html` if the UI needs new elements).
 2. `npm run build` — regenerates `index.html`.
-3. `npm test` — runs build + all nine Playwright suites headless. Every suite must end
+3. `npm test` — runs build + all thirteen Playwright suites headless. Every suite must end
    with `HAD ERROR: false` (no console/page errors). Read the printed assertions, not just
    the exit code — several tests print `OK`/`FAIL` inline rather than throwing.
 4. For anything visual (new template, layout change, animation timing), also actually look
-   at the screenshots the tests write to `qa/qa2/` through `qa/qa10/` — passing assertions
+   at the screenshots the tests write to `qa/qa2/` through `qa/qa13/` — passing assertions
    don't catch "it renders but looks wrong." Read a few of them back before calling it done.
    For anything aspect-ratio-related specifically, check Vertical and Square, not just the
    Widescreen default — a layout that fits fine at 1920 wide can overflow badly at 1080.
@@ -128,6 +146,17 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
   object's properties won't catch. A single `dispatchEvent(new Event('change', {bubbles:
   true}))` via `page.evaluate()` fires it exactly once. This is a test-authoring pitfall,
   not a user-facing bug — real typing-then-blur only ever fires `change` once.
+- **Anything that must be visible in the editor but must NOT appear in recorded video has to
+  be a plain DOM element, never a Fabric object added to `canvas`.** `MediaRecorder` in
+  `startRecording()` calls `canvas.lowerCanvasEl.captureStream()` — it only ever captures the
+  canvas's own pixel buffer, not sibling/child DOM. This is how the transparent-background
+  checkerboard (styled onto `#stageWrap`, only visible through a transparent canvas) and the
+  safe-zone overlay (a div appended to `canvas.wrapperEl`, i.e. Fabric's own
+  `.canvas-container`) both stay editor-only for free, with no special-casing at record time.
+  If you add another "guide/chrome, not content" layer, follow the same pattern — and verify
+  it with the same technique used in `test_v12.js`/`test_v13.js`: decode the actual recorded
+  WebM's pixels in a fresh page (not just eyeball the live editor), since a bug here would
+  otherwise only show up after the user already downloaded their video.
 
 ## Architecture notes
 
@@ -173,6 +202,31 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
 - Save/load round-trips through `canvas.toJSON()`-equivalent (`obj.toObject(['data','name'])`
   per object) and `fabric.util.enlivenObjects()`. Fabric's own group serialization already
   handles nested `fabric.Group` children (the dot-grid), so no special-casing was needed there.
+- **Layer grouping** (`groupSelected()`/`ungroupSelected()`) turns a multi-select
+  (`fabric.ActiveSelection`) into (or back out of) a single `fabric.Group` tagged
+  `data.userGroup = true`. That tag is what lets `selectProps()` show an "Ungroup" button —
+  composite layers like Dot-Grid/Map Pin/Org-Chart are also `fabric.Group`s but must never
+  show it, so every group-type branch checks `data.userGroup` specifically rather than just
+  `type === 'group'`.
+- **Transparent background** is the literal string `'transparent'` in `BG_COLOR_OPTIONS`
+  (`app.js`) and `canvas.backgroundColor` — deliberately not `''`, which would be falsy and
+  silently break the `proj.bgColor || '#1F3864'` load fallback. Verified (not assumed) that
+  Chrome's VP9 WebM recording path preserves real per-pixel alpha end-to-end, not just an
+  editor-preview checkerboard — see `test_v12.js`'s decoded-pixel assertions. The canvas's
+  visible frame (outline/shadow) lives on Fabric's `.canvas-container` div, not on the outer
+  `#stageWrap` card, specifically so it stays visible/correct against a transparent canvas
+  and at every aspect ratio (`#stageWrap` is a fixed-width card regardless of `W`/`H`).
+- **Safe zone guide** (`SAFE_ZONE_PRESETS`, `renderSafeZoneButtons()`,
+  `updateSafeZoneOverlay()` in `app.js`) shows a per-platform tinted-band overlay for
+  Vertical-only scenes. Figures are approximate/community-sourced (no platform publishes an
+  official spec) — re-check against current app screenshots if TikTok/Reels/Shorts visibly
+  redesign their UI, and update the dated comment above `SAFE_ZONE_PRESETS` when you do. Only
+  meaningful for the Vertical preset (all three platforms are vertical-only), so
+  `renderSafeZoneButtons()` disables the platform chips outside Vertical and `setAspect()`
+  resets the selection to "None" on leaving it, rather than leaving a stale guide showing over
+  a shape it wasn't measured for. The overlay itself is a plain DOM element (see the DOM-
+  overlay gotcha above), positioned with percentage sizing so it re-scales for free on
+  resize/aspect-change with no extra JS.
 
 ## Deferred / likely next asks
 
