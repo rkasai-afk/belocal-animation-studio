@@ -120,22 +120,87 @@ function renderSafeZoneButtons() {
   const vertical = currentAspect === 'vertical';
   ['none', ...Object.keys(SAFE_ZONE_PRESETS)].forEach(id => {
     const btn = document.createElement('button');
-    btn.className = 'aspect-btn' + (id === currentSafeZone ? ' active' : '');
+    btn.className = 'szone-btn' + (id === currentSafeZone ? ' active' : '');
     btn.textContent = id === 'none' ? 'None' : SAFE_ZONE_PRESETS[id].label;
     if (!vertical && id !== 'none') { btn.disabled = true; btn.style.opacity = '0.4'; btn.style.cursor = 'not-allowed'; }
     btn.addEventListener('click', () => {
       currentSafeZone = id;
       renderSafeZoneButtons();
       updateSafeZoneOverlay();
+      if (id !== 'none') {
+        const moved = fitLayersToSafeZone();
+        setStatus(moved
+          ? `Nudged ${moved} layer${moved === 1 ? '' : 's'} clear of the ${SAFE_ZONE_PRESETS[id].label} safe zone.`
+          : `All layers already clear of the ${SAFE_ZONE_PRESETS[id].label} safe zone.`);
+      }
     });
     wrap.appendChild(btn);
   });
   const note = document.getElementById('safeZoneNote');
   if (note) {
     note.textContent = vertical
-      ? 'Shaded bands show roughly where that app’s own UI (captions, like/share buttons, progress bar) covers your video. Guide only — never recorded or exported.'
+      ? 'Shaded bands show roughly where that app’s own UI (captions, like/share buttons, progress bar) covers your video. Guide only — never recorded or exported. Click a platform again anytime to re-fit layers you’ve since dragged into its band.'
       : 'Only meaningful in the Vertical video shape — TikTok, Reels, and Shorts are all vertical-only formats.';
   }
+  const fitBtn = document.getElementById('btnFitSafeZone');
+  if (fitBtn) {
+    fitBtn.disabled = !vertical || currentSafeZone === 'none';
+    fitBtn.onclick = () => {
+      const moved = fitLayersToSafeZone();
+      setStatus(moved
+        ? `Nudged ${moved} layer${moved === 1 ? '' : 's'} clear of the ${SAFE_ZONE_PRESETS[currentSafeZone].label} safe zone.`
+        : `All layers already clear of the ${SAFE_ZONE_PRESETS[currentSafeZone].label} safe zone.`);
+    };
+  }
+}
+
+// Pixel-space content rect that layers should stay clear of the excluded bands within —
+// the full canvas when no platform guide is active, or the inset rect between the guide's
+// shaded bands otherwise.
+function safeZoneRect() {
+  const zone = (currentAspect === 'vertical') ? SAFE_ZONE_PRESETS[currentSafeZone] : null;
+  if (!zone) return { left: 0, top: 0, right: W, bottom: H };
+  return { left: zone.left * W, top: zone.top * H, right: W - zone.right * W, bottom: H - zone.bottom * H };
+}
+
+// Nudges each top-level layer that pokes into the currently-selected safe zone back inside
+// it, by translating only — never resizing/rescaling — using the same "read the absolute
+// bounding rect, shift by a delta" technique as alignObjToCanvas(). A layer already wider or
+// taller than the safe rect itself is aligned to its near edge as a best effort rather than
+// forced to fit (there's nowhere to shrink it to without breaking the template's own sizing).
+// Elements that intentionally span most of the frame (a full-bleed bar or backdrop panel) are
+// left alone — nudging those isn't "fitting," it's breaking the layout they were meant to have.
+// Returns the number of layers actually moved, for user-facing feedback.
+function fitLayersToSafeZone() {
+  const zone = safeZoneRect();
+  if (zone.left === 0 && zone.top === 0 && zone.right === W && zone.bottom === H) return 0;
+  const zoneW = zone.right - zone.left, zoneH = zone.bottom - zone.top;
+  let moved = 0;
+  canvas.getObjects().forEach(obj => {
+    if (obj === bgMediaObj) return;
+    const r = obj.getBoundingRect(true, true);
+    if (r.width >= W * 0.92 || r.height >= H * 0.92) return;
+    let dx = 0, dy = 0;
+    if (r.width <= zoneW) {
+      if (r.left < zone.left) dx = zone.left - r.left;
+      else if (r.left + r.width > zone.right) dx = zone.right - (r.left + r.width);
+    } else {
+      dx = zone.left - r.left;
+    }
+    if (r.height <= zoneH) {
+      if (r.top < zone.top) dy = zone.top - r.top;
+      else if (r.top + r.height > zone.bottom) dy = zone.bottom - (r.top + r.height);
+    } else {
+      dy = zone.top - r.top;
+    }
+    if (dx || dy) {
+      obj.set({ left: obj.left + dx, top: obj.top + dy });
+      obj.setCoords();
+      moved++;
+    }
+  });
+  if (moved) canvas.requestRenderAll();
+  return moved;
 }
 
 // Renders as a plain DOM overlay appended to Fabric's own canvas wrapper element, NOT as
@@ -722,6 +787,7 @@ function loadTemplate(id) {
   canvas.getObjects().slice().forEach(o => { if (o !== bgMediaObj) canvas.remove(o); });
   const specs = TEMPLATES[id].layers();
   specs.forEach(spec => canvas.add(specToObject(spec)));
+  fitLayersToSafeZone();
   canvas.requestRenderAll();
   refreshLayerList();
   selectProps(null);

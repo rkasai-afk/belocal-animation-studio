@@ -56,9 +56,10 @@ button.small { padding:5px 9px; font-size:12px; }
 .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
 .card h2 { font-size:12.5px; text-transform:uppercase; letter-spacing:0.5px; color:var(--teal); margin:0 0 10px 0; display:flex; align-items:center; justify-content:space-between; }
 .tpl-grid { display:flex; flex-wrap:wrap; gap:6px; }
-.tpl-btn, .aspect-btn, .cat-chip { padding:7px 11px; font-size:12px; border-radius:999px; border:1px solid var(--line); background:#fff; cursor:pointer; font-weight:600; color:var(--text-gray); }
-.tpl-btn:hover, .aspect-btn:hover, .cat-chip:hover { border-color:var(--teal); color:var(--teal); }
-.tpl-btn.active, .aspect-btn.active, .cat-chip.active { border-color:var(--teal); background:#F2F9F9; color:var(--teal); }
+.tpl-btn, .aspect-btn, .cat-chip, .szone-btn { padding:7px 11px; font-size:12px; border-radius:999px; border:1px solid var(--line); background:#fff; cursor:pointer; font-weight:600; color:var(--text-gray); }
+.tpl-btn:hover, .aspect-btn:hover, .cat-chip:hover, .szone-btn:hover { border-color:var(--teal); color:var(--teal); }
+.tpl-btn.active, .aspect-btn.active, .cat-chip.active, .szone-btn.active { border-color:var(--teal); background:#F2F9F9; color:var(--teal); }
+.szone-btn:disabled, .szone-btn:disabled:hover { cursor:not-allowed; }
 .cat-chip { padding:4px 10px; font-size:11px; background:var(--paper); }
 #templateGrid { max-height:190px; overflow-y:auto; padding-top:2px; }
 
@@ -149,6 +150,7 @@ input[type=range] { width:100%; }
       <h2>Safe zone guide</h2>
       <div class="tpl-grid" id="safeZoneGrid"></div>
       <div class="empty-note" style="margin-top:8px;" id="safeZoneNote"></div>
+      <button type="button" class="ghost small" id="btnFitSafeZone" style="margin-top:8px; width:100%;">Fit layers to safe zone</button>
     </div>
 
     <div class="card">

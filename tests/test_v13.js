@@ -87,8 +87,48 @@ async function main() {
   const overlayAfterSquare = await overlayInfo();
   console.log('9. overlay hidden after leaving Vertical:', overlayAfterSquare.display, overlayAfterSquare.display === 'none' ? 'OK' : 'FAIL');
 
-  // --- 10. the overlay is a DOM guide only — never baked into recorded video output ---
-  await clickAspect('Vertical');
+  // --- 10. selecting a platform auto-fits the active template's layers into the safe rect ---
+  await clickAspect('Vertical'); // reloads the default Stat Reveal template, layers span full W/H
+  await clickSafeZone('TikTok');
+  const fitResult = await page.evaluate(() => {
+    const zone = safeZoneRect();
+    const objs = canvas.getObjects().filter(o => o !== bgMediaObj);
+    const overflowing = objs.filter(o => {
+      const r = o.getBoundingRect(true, true);
+      if (r.width >= W * 0.92 || r.height >= H * 0.92) return false; // full-bleed elements are exempt
+      return r.left < zone.left - 0.5 || r.top < zone.top - 0.5 || (r.left + r.width) > zone.right + 0.5 || (r.top + r.height) > zone.bottom + 0.5;
+    }).map(o => o.name);
+    return { overflowing, status: document.getElementById('status').textContent };
+  });
+  console.log('10. Stat Reveal layers fit the TikTok safe zone after auto-fit:', JSON.stringify(fitResult), fitResult.overflowing.length === 0 ? 'OK' : 'FAIL');
+  console.log('11. status line reports the fit action:', fitResult.status, /nudged|already clear/i.test(fitResult.status) ? 'OK' : 'FAIL');
+  await page.screenshot({ path: path.join(outDir, '04_stat_reveal_fitted_tiktok.png') });
+
+  // --- 12. the manual "Fit layers to safe zone" button is gated the same way the chips are ---
+  const fitBtnEnabledWithZone = await page.evaluate(() => !document.getElementById('btnFitSafeZone').disabled);
+  console.log('12. Fit button enabled while a platform is selected:', fitBtnEnabledWithZone ? 'OK' : 'FAIL');
+  await clickSafeZone('None');
+  const fitBtnDisabledNone = await page.evaluate(() => document.getElementById('btnFitSafeZone').disabled);
+  console.log('13. Fit button disabled again once back to None:', fitBtnDisabledNone ? 'OK' : 'FAIL');
+
+  // --- 14. re-selecting a platform (or the manual Fit button) re-nudges a layer the user has
+  // since dragged back into the band, without needing a template reload ---
+  await clickSafeZone('TikTok');
+  await page.evaluate(() => {
+    const o = canvas.getObjects().find(o => o !== bgMediaObj);
+    o.set({ top: 5 }); o.setCoords(); canvas.requestRenderAll();
+  });
+  await page.click('#btnFitSafeZone');
+  await page.waitForTimeout(150);
+  const refit = await page.evaluate(() => {
+    const zone = safeZoneRect();
+    const o = canvas.getObjects().find(o => o !== bgMediaObj);
+    const r = o.getBoundingRect(true, true);
+    return { top: r.top, zoneTop: zone.top };
+  });
+  console.log('15. manual Fit button re-nudges a layer dragged back into the band:', JSON.stringify(refit), refit.top >= refit.zoneTop - 0.5 ? 'OK' : 'FAIL');
+
+  // --- 16. the overlay is a DOM guide only — never baked into recorded video output ---
   const tplBtns = await page.$$('.tpl-btn');
   const tplLabels = await Promise.all(tplBtns.map(b => b.textContent()));
   await tplBtns[tplLabels.findIndex(l => l.includes('Blank canvas'))].click();
@@ -101,7 +141,7 @@ async function main() {
   const download = await downloadPromise;
   const vidPath = path.join(outDir, 'safezone_recording.webm');
   await download.saveAs(vidPath);
-  console.log('10. recorded webm with safe zone guide active:', fs.statSync(vidPath).size, 'bytes');
+  console.log('16. recorded webm with safe zone guide active:', fs.statSync(vidPath).size, 'bytes');
 
   const page2 = await context.newPage();
   await page2.goto('about:blank');
@@ -123,7 +163,7 @@ async function main() {
   // Plain navy background (#1F3864 = rgb(31,56,100)) — no pink safe-zone tint blended in,
   // since the overlay is a DOM element outside the captured canvas stream.
   const noTintBaked = Math.abs(pixel[0] - 31) < 25 && Math.abs(pixel[1] - 56) < 25 && Math.abs(pixel[2] - 100) < 25;
-  console.log('11. recorded pixel inside safe-zone band shows plain background, no baked-in tint:', pixel, noTintBaked ? 'OK' : 'FAIL');
+  console.log('17. recorded pixel inside safe-zone band shows plain background, no baked-in tint:', pixel, noTintBaked ? 'OK' : 'FAIL');
   await page2.close();
 
   console.log('HAD ERROR:', hadError);
