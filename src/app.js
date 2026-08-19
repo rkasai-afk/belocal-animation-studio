@@ -8,6 +8,7 @@ const CARD_PALETTE = [COLORS.tealLight, COLORS.greenLight, COLORS.amberLight, CO
 const BG_COLOR_OPTIONS = [
   {name:'navy', val:'#1F3864'}, {name:'teal-dark', val:'#0B4A49'},
   {name:'charcoal', val:'#22252B'}, {name:'wine', val:'#3A1F2B'},
+  {name:'transparent', val:'transparent'},
 ];
 const SWATCH_OPTIONS = [
   {name:'white', val:'#FFFFFF'}, {name:'teal', val:COLORS.tealLight}, {name:'green', val:COLORS.greenLight},
@@ -1115,14 +1116,18 @@ function renderBgColorSwatches() {
   el.innerHTML = '';
   BG_COLOR_OPTIONS.forEach(o => {
     const s = document.createElement('div');
-    s.className = 'swatch' + (canvas.backgroundColor === o.val ? ' active' : '');
-    s.style.background = o.val; s.title = o.name;
+    const isTransparent = o.val === 'transparent';
+    s.className = 'swatch' + (isTransparent ? ' checker' : '') + (canvas.backgroundColor === o.val ? ' active' : '');
+    if (!isTransparent) s.style.background = o.val;
+    s.title = o.name;
     s.addEventListener('click', () => {
       canvas.backgroundColor = o.val; canvas.requestRenderAll();
       [...el.children].forEach(c => c.classList.remove('active')); s.classList.add('active');
+      document.getElementById('bgTransparentNote').style.display = isTransparent ? '' : 'none';
     });
     el.appendChild(s);
   });
+  document.getElementById('bgTransparentNote').style.display = canvas.backgroundColor === 'transparent' ? '' : 'none';
 }
 
 /* ============ BACKGROUND MEDIA ============ */
