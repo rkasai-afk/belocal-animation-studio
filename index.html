@@ -118,8 +118,28 @@ header p { margin:4px 0 0 0; font-size:12.5px; color:rgba(255,255,255,0.75); max
 
 .layout { display:flex; gap:20px; padding:20px; align-items:flex-start; flex-wrap:wrap; }
 .stage-col { flex: 0 0 auto; }
-#stageWrap { width:860px; max-width:90vw; border-radius:10px; overflow:hidden; box-shadow:0 4px 18px rgba(0,0,0,0.18); border:1px solid var(--line); background:#1F3864; position:relative; display:flex; align-items:center; justify-content:center; }
+#stageWrap {
+  width:880px; max-width:90vw; border-radius:10px; overflow:hidden; box-shadow:0 4px 18px rgba(0,0,0,0.18);
+  border:1px solid var(--line); position:relative; display:flex; align-items:center; justify-content:center;
+  /* Checkerboard "transparency" pattern — only ever visible through a transparent canvas
+     background, since an opaque canvas fill fully covers it otherwise. */
+  background-image:
+    linear-gradient(45deg, #555 25%, transparent 25%), linear-gradient(-45deg, #555 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #555 75%), linear-gradient(-45deg, transparent 75%, #555 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  background-color: #777;
+}
 #stageWrap canvas { display:block; }
+/* The true video-frame boundary, independent of the canvas's own background color/
+   transparency and independent of the outer stage card's fixed-width chrome above — always
+   hugs whatever size the canvas is actually displayed at, at any aspect ratio. Square
+   corners on purpose (unlike the rounded outer card): the real exported frame has square
+   corners, and rounding this would misrepresent it. */
+#stageWrap .canvas-container {
+  outline: 1px solid rgba(0,0,0,0.35);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.8), 0 6px 20px rgba(0,0,0,0.3);
+}
 .transport { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; align-items:center; }
 button { font-family:inherit; font-size:13.5px; font-weight:600; padding:9px 16px; border-radius:7px; border:1px solid var(--line); background:#fff; cursor:pointer; }
 button.primary { background:var(--teal); color:#fff; border-color:var(--teal); }
@@ -165,6 +185,14 @@ input[type=range] { width:100%; }
 .swatches { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
 .swatch { width:24px; height:24px; border-radius:6px; cursor:pointer; border:2px solid transparent; }
 .swatch.active { border-color:#333; }
+.swatch.checker {
+  background-image:
+    linear-gradient(45deg, #999 25%, transparent 25%), linear-gradient(-45deg, #999 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #999 75%), linear-gradient(-45deg, transparent 75%, #999 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+  background-color: #ccc;
+}
 .empty-note { font-size:12.5px; color:var(--text-gray); font-style:italic; }
 .font-preset { display:block; width:100%; text-align:left; padding:8px 10px; margin-top:6px; border:1px solid var(--line); border-radius:7px; background:#fff; cursor:pointer; }
 .font-preset.active { border-color:var(--teal); background:#F2F9F9; }
@@ -266,6 +294,7 @@ input[type=range] { width:100%; }
       <h2>Scene</h2>
       <label>Background color (behind everything)</label>
       <div class="swatches" id="bgColorSwatches"></div>
+      <div class="empty-note" id="bgTransparentNote" style="display:none; margin-top:6px;">Recorded video keeps real transparency (works in Chrome and most modern editors) — good for layering over other footage. A few older tools may show it as solid black; test a short export first if unsure.</div>
       <label>Hold time at end (seconds)</label>
       <input type="number" id="fHold" value="2" step="0.5" min="0.5">
       <div class="divider"></div>
@@ -730,6 +759,7 @@ const CARD_PALETTE = [COLORS.tealLight, COLORS.greenLight, COLORS.amberLight, CO
 const BG_COLOR_OPTIONS = [
   {name:'navy', val:'#1F3864'}, {name:'teal-dark', val:'#0B4A49'},
   {name:'charcoal', val:'#22252B'}, {name:'wine', val:'#3A1F2B'},
+  {name:'transparent', val:'transparent'},
 ];
 const SWATCH_OPTIONS = [
   {name:'white', val:'#FFFFFF'}, {name:'teal', val:COLORS.tealLight}, {name:'green', val:COLORS.greenLight},
@@ -1837,14 +1867,18 @@ function renderBgColorSwatches() {
   el.innerHTML = '';
   BG_COLOR_OPTIONS.forEach(o => {
     const s = document.createElement('div');
-    s.className = 'swatch' + (canvas.backgroundColor === o.val ? ' active' : '');
-    s.style.background = o.val; s.title = o.name;
+    const isTransparent = o.val === 'transparent';
+    s.className = 'swatch' + (isTransparent ? ' checker' : '') + (canvas.backgroundColor === o.val ? ' active' : '');
+    if (!isTransparent) s.style.background = o.val;
+    s.title = o.name;
     s.addEventListener('click', () => {
       canvas.backgroundColor = o.val; canvas.requestRenderAll();
       [...el.children].forEach(c => c.classList.remove('active')); s.classList.add('active');
+      document.getElementById('bgTransparentNote').style.display = isTransparent ? '' : 'none';
     });
     el.appendChild(s);
   });
+  document.getElementById('bgTransparentNote').style.display = canvas.backgroundColor === 'transparent' ? '' : 'none';
 }
 
 /* ============ BACKGROUND MEDIA ============ */
