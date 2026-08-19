@@ -29,6 +29,27 @@ Editing still happens across normal source files (below); `build.js` assembles t
 `index.html`. Never hand-edit `index.html` directly — it's a build artifact and will be
 overwritten.
 
+## Multi-tool repo structure
+
+This repo hosts more than one independent tool under `www.animate.adaptinc.jp`, and is
+expected to grow more over time. Each tool is self-contained — its own source, its own
+tests — and GitHub Pages serves them all for free as subdirectories of the same repo, no
+extra deploy config needed per tool:
+
+- **Animation Studio** — this editor, at `/` (source under `src/`, built to `index.html`).
+- **Auto Subtitles** — EN/JA video/audio → SRT, at `/subtitles/` (source and docs in
+  `subtitles/`; see `subtitles/README.md` for that tool's own architecture notes).
+
+**Global nav.** Every tool's page carries a `<nav class="global-nav">` bar linking to every
+other tool, so a visitor to any one of them can reach any other. There is deliberately no
+shared nav component/JS file — the animation studio must stay a single self-contained file
+with zero external requests (see above), which rules out fetching a shared nav fragment at
+runtime, so each tool's nav is hand-duplicated markup instead. **When adding a new tool,
+add its link to the nav in every existing tool's page** (currently:
+`src/studio_v2_template.html`'s `<nav>` near the top of `<body>`, and `subtitles/index.html`'s
+equivalent) — there's no registry that does this automatically. A newly added tool's own
+page should likewise link back to all the others.
+
 ## File map
 
 ```
@@ -85,6 +106,13 @@ tests/test_v13.js             Playwright regression: the Vertical-only safe-zone
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
+subtitles/                    Auto Subtitles tool (EN/JA video/audio -> SRT for CapCut),
+                               served at /subtitles/. Separate, independent tool — see
+                               "Multi-tool repo structure" above and subtitles/README.md
+                               for its own architecture notes. No build step of its own.
+tests/test_subtitles.js       Playwright regression for the Auto Subtitles tool: cue-
+                               packing, editable preview, SRT export (via a stubbed Worker),
+                               plus a best-effort real-pipeline check
 ```
 
 ## Workflow

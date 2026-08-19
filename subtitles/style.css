@@ -19,6 +19,37 @@ body {
   min-height: 100vh;
 }
 
+/* Global nav — shared across every BeLocal tool under this domain. Adding a new tool
+   means adding one <a> here AND the matching one in that tool's own page (this one has no
+   build step, but the animation studio's equivalent lives in src/studio_v2_template.html
+   and only takes effect after `npm run build`). */
+.global-nav {
+  background: #152747;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 8px 28px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-size: 12.5px;
+}
+
+.global-nav-brand { font-weight: 700; color: #fff; letter-spacing: 0.3px; }
+
+.global-nav a, .global-nav span.current {
+  color: rgba(255, 255, 255, 0.65);
+  text-decoration: none;
+  padding: 3px 0;
+  border-bottom: 2px solid transparent;
+}
+
+.global-nav a:hover { color: #fff; }
+
+.global-nav span.current {
+  color: #fff;
+  font-weight: 700;
+  border-bottom-color: var(--accent);
+}
+
 header {
   padding: 20px 28px;
   border-bottom: 1px solid var(--border);
@@ -191,12 +222,3 @@ button.secondary {
   color: var(--text-dim);
   line-height: 1.5;
 }
-
-footer {
-  text-align: center;
-  color: var(--text-dim);
-  font-size: 12px;
-  padding: 20px;
-}
-
-footer a { color: var(--accent); }

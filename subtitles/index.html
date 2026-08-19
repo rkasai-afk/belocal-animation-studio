@@ -8,6 +8,15 @@
 <link rel="stylesheet" href="./style.css">
 </head>
 <body>
+<!-- When adding a new tool, add its link here AND in the matching nav in that tool's own
+     page (e.g. src/studio_v2_template.html for the animation studio) — there's no shared
+     nav component, by design. -->
+<nav class="global-nav">
+  <span class="global-nav-brand">BeLocal Tools</span>
+  <a href="../">Animation Studio</a>
+  <span class="current">Auto Subtitles</span>
+</nav>
+
 <header>
   <h1>Auto Subtitles</h1>
   <p>Upload a video or audio file, get an SRT you can import into CapCut.</p>
@@ -62,10 +71,6 @@
     <div id="cueList"></div>
   </div>
 </main>
-
-<footer>
-  Part of <a href="../">BeLocal Animation Studio</a>
-</footer>
 
 <script type="module" src="./app.js"></script>
 </body>
