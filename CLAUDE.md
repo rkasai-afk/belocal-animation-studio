@@ -76,8 +76,12 @@ tests/test_v12.js             Playwright regression: transparent background swat
 tests/test_v13.js             Playwright regression: the Vertical-only safe-zone guide
                                (TikTok/Instagram Reels/YouTube Shorts) — chip gating outside
                                Vertical, per-platform band percentages, reset-to-None on
-                               leaving Vertical, and a recorded WebM's decoded pixels
-                               confirming the guide is never baked into output
+                               leaving Vertical, auto-fit nudging a template's layers clear of
+                               the selected zone (with a bounding-box overflow check like the
+                               aspect-ratio tests use) and the manual "Fit layers to safe
+                               zone" button re-nudging a layer dragged back in, and a recorded
+                               WebM's decoded pixels confirming the guide is never baked into
+                               output
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -87,7 +91,7 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
 
 1. Edit `src/app.js` (and `src/studio_v2_template.html` if the UI needs new elements).
 2. `npm run build` — regenerates `index.html`.
-3. `npm test` — runs build + all thirteen Playwright suites headless. Every suite must end
+3. `npm test` — runs build + all twelve Playwright suites headless. Every suite must end
    with `HAD ERROR: false` (no console/page errors). Read the printed assertions, not just
    the exit code — several tests print `OK`/`FAIL` inline rather than throwing.
 4. For anything visual (new template, layout change, animation timing), also actually look
@@ -157,6 +161,16 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
   it with the same technique used in `test_v12.js`/`test_v13.js`: decode the actual recorded
   WebM's pixels in a fresh page (not just eyeball the live editor), since a bug here would
   otherwise only show up after the user already downloaded their video.
+- **Give every new row of pill/chip buttons its own CSS class, even when it visually reuses
+  an existing style.** `.tpl-btn`/`.aspect-btn`/`.cat-chip`/`.szone-btn` all share one look
+  via a grouped CSS selector, but each has its own class specifically so a test's
+  `page.$$('.foo-btn')` only ever matches the one button row it's meant to. Reusing an
+  existing class (e.g. giving the safe-zone chips `.aspect-btn` because they look like the
+  aspect buttons) silently makes `tests/test_v5.js`'s `.aspect-btn` query match both rows at
+  once — this has broken a test's element count twice now (once for `.tpl-btn`, again for
+  `.aspect-btn`). Treat "new button row, shared look" as a two-line change: a new class in
+  the JS, added to the existing grouped CSS selector for styling — never reuse another row's
+  class just because it looks the same.
 
 ## Architecture notes
 
@@ -227,6 +241,22 @@ docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdo
   a shape it wasn't measured for. The overlay itself is a plain DOM element (see the DOM-
   overlay gotcha above), positioned with percentage sizing so it re-scales for free on
   resize/aspect-change with no extra JS.
+- **Fitting layers to the safe zone** (`safeZoneRect()`, `fitLayersToSafeZone()` in `app.js`)
+  is a generic, engine-level pass — not a per-template concern. It reads each top-level
+  object's absolute `getBoundingRect(true, true)` and translates it (never resizes/rescales)
+  just enough to sit inside the inset safe rect, the same "read bounding rect, shift by a
+  delta" technique `alignObjToCanvas()` already uses, so it's safe under rotation/scale/
+  groups for the same reason. An object already bigger than the safe rect on an axis is
+  aligned to its near edge as a best effort rather than force-fit (nothing to shrink it into
+  without breaking the template's own sizing), and anything covering ≥92% of `W` or `H` is
+  left alone entirely on the assumption it's an intentional full-bleed background element,
+  not "content" that should dodge the guide. It runs automatically wherever layers already
+  get (re)built with a zone active — `loadTemplate()` (covers initial load, template
+  switches, and the aspect-switch reload path) and the safe-zone chip's own click handler
+  (covers a blank/hand-built scene, and re-fits anything the user has since dragged back into
+  the band) — plus a manual "Fit layers to safe zone" button for re-running it on demand.
+  Because every entry point funnels through this one function, adding a new template or new
+  composite layer kind needs zero safe-zone-specific code of its own.
 
 ## Deferred / likely next asks
 
