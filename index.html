@@ -1165,6 +1165,53 @@ function rebuildPin(obj, patch) {
    applyMapTimeline() is the per-frame counterpart, called from applyFrame() during
    Preview/scrub — it interpolates the SAME target values buildMapGroup() computes, so
    the animation always lands exactly on the static look, never a mismatched "pop".
+
+   ---- Map rendering: vector-quality zoom (why every shape below sets objectCaching:false) ----
+   ROOT CAUSE (diagnosed, not guessed — reproduced with a direct Fabric internals inspection):
+   this map is real vector geometry the whole way through (SVG path data in src/map_data.js ->
+   fabric.Path, never a raster image or a pre-rendered bitmap) and the canvas backing store
+   already matches the project's real export resolution 1:1 (no missing retina scaling, no CSS
+   stretching — devicePixelRatio contributes nothing extra in the headless/test environment and
+   isn't the bug even where it does). The pixelation came from Fabric's own object-cache
+   optimization: by default, an object with objectCaching:true (Fabric's default for every
+   object type) renders itself once into an offscreen bitmap sized for its CURRENT effective
+   scale, then reuses that bitmap on later frames instead of re-rendering — a real win for
+   objects that render expensively and rarely change. But that cache is capped at a fixed total
+   pixel budget (fabric.config.perfLimitSizeTotal, 2^21 ~= 2.1 megapixels) regardless of the
+   object's actual on-screen size: once camera zoom pushes an object's needed resolution past
+   that budget, Fabric's _limitCacheSize() silently shrinks the cache bitmap to fit, and then
+   STRETCHES that undersized bitmap to cover the real (larger) on-screen area — visible pixel
+   blocks, with the underlying vector data completely untouched. Confirmed by inspecting a
+   zoomed map object's internal zoomX (the scale its cache was actually rendered at) against its
+   real scaleX (the scale it's actually displayed at) after a camera zoom: pre-fix, a group
+   cached at 2.39x was being displayed at 5.91x — and its cache canvas measured exactly
+   1467x1429px, i.e. 1467*1429 = 2,096,343, matching perfLimitSizeTotal (2,097,152) almost to
+   the pixel. That match is what turned "seems related to caching" into a confirmed root cause.
+
+   THE FIX is objectCaching:false on every shape this module builds (region Paths, route
+   line/dots/marker, stat card rect+text) plus the top-level Group itself — not a global
+   Fabric setting change (every other layer type in this app keeps Fabric's default caching
+   unchanged). This is a narrow, reasoned exception rather than "caching is bad": this whole
+   group is re-scaled every single frame during any camera move (applyCameraState() sets a new
+   scaleX/scaleY/left/top on it each requestAnimationFrame tick), so a bitmap cache never
+   actually gets reused during the exact moments zoom quality is visible to a viewer — Fabric
+   ends up re-rendering the cache almost every frame anyway, meaning the cache was already
+   buying near-zero benefit here while remaining a live correctness hazard. Verified this holds
+   at the campaign's actual worst case, not just the small region first caught: a full manual
+   6x zoom (MAX_CAMERA_ZOOM) on Hokkaidō — the largest Japan prefecture's path, ~7x Kanagawa's
+   bounding box — settles with the region Path's own cache-relevant zoomX exactly equal to the
+   group's real scaleX (5.98 == 5.98, no mismatch), because with objectCaching:false the shape
+   is drawn fresh against the real canvas context every frame instead of through any cache.
+
+   WHY NOT rely on per-object caching just being "small enough" instead: it would have worked
+   for the specific regions tested by luck of their size relative to the 1920x1080 canvas this
+   app currently ships, not by any actual guarantee — a canvas backing store larger than
+   ~1447x1447 (2.1 effective megapixels) makes even a single full-frame-filling Path exceed
+   perfLimitSizeTotal again, which is a real future risk (e.g. a hypothetical 4K/3840x2160
+   export preset) that a "happens to be under budget today" fix would silently reintroduce.
+   Disabling caching on this bounded, fixed-size set of map shapes (a few dozen simple paths/
+   circles/text per map, not thousands of objects) is what makes the map's sharpness a real
+   architectural guarantee instead of a coincidence of today's canvas size.
    ================================================================================ */
 
 // ---- geographic dataset registry -------------------------------------------------------
@@ -1437,11 +1484,11 @@ function routeGeometry(from, to, curve) {
 // "aircraft" at documentary/editorial scale without a literal, cartoonish icon.
 function buildPlaneShape(color) {
   return new fabric.Path('M 0 -11 L 3.5 -2 L 11 3 L 3 3.6 L 3.6 10 L 0 7 L -3.6 10 L -3 3.6 L -11 3 L -3.5 -2 Z', {
-    fill: color, stroke: 'rgba(0,0,0,0.25)', strokeWidth: 0.6, originX: 'center', originY: 'center', selectable: false, evented: false,
+    fill: color, stroke: 'rgba(0,0,0,0.25)', strokeWidth: 0.6, originX: 'center', originY: 'center', selectable: false, evented: false, objectCaching: false,
   });
 }
 function buildArrowHeadShape(color) {
-  return new fabric.Triangle({ width: 18, height: 20, fill: color, originX: 'center', originY: 'center', selectable: false, evented: false });
+  return new fabric.Triangle({ width: 18, height: 20, fill: color, originX: 'center', originY: 'center', selectable: false, evented: false, objectCaching: false });
 }
 
 // ---- statistics overlay (map-space: anchored to a region, or a default caption spot) ---
@@ -1462,18 +1509,18 @@ function buildStatCard(e, anchor) {
   // each row advances a running Y and reports where it ended, so cardH and every other row's
   // position fall out of that instead of needing to be kept in sync by hand.
   let cursorY = padY;
-  const labelText = new fabric.Textbox((e.label || '').toUpperCase(), { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 12.5, fontWeight: 700, fill: 'rgba(255,255,255,0.7)', charSpacing: 50, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  const labelText = new fabric.Textbox((e.label || '').toUpperCase(), { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 12.5, fontWeight: 700, fill: 'rgba(255,255,255,0.7)', charSpacing: 50, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false, objectCaching: false });
   cursorY += 20;
-  const valueText = new fabric.Textbox(finalValueText, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 27, fontWeight: 800, fill: '#FFFFFF', originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  const valueText = new fabric.Textbox(finalValueText, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 27, fontWeight: 800, fill: '#FFFFFF', originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false, objectCaching: false });
   cursorY += 34;
   let secondaryText = null;
   if (hasSecondary) {
-    secondaryText = new fabric.Textbox(e.secondary, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 13.5, fontWeight: 600, fill: COLORS.tealLight, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+    secondaryText = new fabric.Textbox(e.secondary, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 13.5, fontWeight: 600, fill: COLORS.tealLight, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false, objectCaching: false });
     cursorY += 22;
   }
   let sourceText = null;
   if (hasSource) {
-    sourceText = new fabric.Textbox('SOURCE — ' + e.source, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 10, fontWeight: 600, fill: 'rgba(255,255,255,0.5)', charSpacing: 15, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+    sourceText = new fabric.Textbox('SOURCE — ' + e.source, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 10, fontWeight: 600, fill: 'rgba(255,255,255,0.5)', charSpacing: 15, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false, objectCaching: false });
     cursorY += 18;
   }
   const cardH = cursorY + padY;
@@ -1482,7 +1529,7 @@ function buildStatCard(e, anchor) {
   // by (x0,y0) now that the card's total height (and therefore y0, which depends on cardH) is
   // known, rather than threading x0/y0 through the cursor loop above.
   [labelText, valueText, secondaryText, sourceText].forEach(o => { if (o) o.set({ left: o.left + x0 + padX, top: o.top + y0 }); });
-  const bg = new fabric.Rect({ left: x0, top: y0, width: cardW, height: cardH, rx: 9, ry: 9, fill: 'rgba(13,22,40,0.78)', stroke: 'rgba(255,255,255,0.18)', strokeWidth: 1, originX: 'left', originY: 'top', selectable: false, evented: false });
+  const bg = new fabric.Rect({ left: x0, top: y0, width: cardW, height: cardH, rx: 9, ry: 9, fill: 'rgba(13,22,40,0.78)', stroke: 'rgba(255,255,255,0.18)', strokeWidth: 1, originX: 'left', originY: 'top', selectable: false, evented: false, objectCaching: false });
   const shapes = [bg, labelText, valueText];
   if (secondaryText) shapes.push(secondaryText);
   if (sourceText) shapes.push(sourceText);
@@ -1553,7 +1600,7 @@ function buildMapGroup(scope, events) {
       strokeWidth: hl ? baseStrokeWidth * 2 : baseStrokeWidth,
       strokeLineJoin: 'round',
       opacity: (anyDim && !hl) ? 0.35 : 1,
-      selectable: false, evented: false,
+      selectable: false, evented: false, objectCaching: false,
     });
     shapes.push(path);
     regionPaths.set(r.name, path);
@@ -1570,10 +1617,10 @@ function buildMapGroup(scope, events) {
     const d = `M ${geo.from.x} ${geo.from.y} Q ${geo.control.x} ${geo.control.y} ${geo.to.x} ${geo.to.y}`;
     const lineShape = new fabric.Path(d, {
       fill: '', stroke: color, strokeWidth: e.style === 'flight' ? 3.2 : 4.5, strokeLineCap: 'round',
-      strokeDashArray: e.dashed ? [11, 9] : null, opacity: e.showTrail === false ? 0 : 0.85, selectable: false, evented: false,
+      strokeDashArray: e.dashed ? [11, 9] : null, opacity: e.showTrail === false ? 0 : 0.85, selectable: false, evented: false, objectCaching: false,
     });
-    const originDot = e.originMarker !== 'none' ? new fabric.Circle({ left: geo.from.x, top: geo.from.y, radius: 6, fill: color, stroke: '#FFFFFF', strokeWidth: 1.5, originX: 'center', originY: 'center', selectable: false, evented: false }) : null;
-    const destDot = e.destMarker !== 'none' ? new fabric.Circle({ left: geo.to.x, top: geo.to.y, radius: 6, fill: color, stroke: '#FFFFFF', strokeWidth: 1.5, originX: 'center', originY: 'center', selectable: false, evented: false }) : null;
+    const originDot = e.originMarker !== 'none' ? new fabric.Circle({ left: geo.from.x, top: geo.from.y, radius: 6, fill: color, stroke: '#FFFFFF', strokeWidth: 1.5, originX: 'center', originY: 'center', selectable: false, evented: false, objectCaching: false }) : null;
+    const destDot = e.destMarker !== 'none' ? new fabric.Circle({ left: geo.to.x, top: geo.to.y, radius: 6, fill: color, stroke: '#FFFFFF', strokeWidth: 1.5, originX: 'center', originY: 'center', selectable: false, evented: false, objectCaching: false }) : null;
     let marker = null;
     const finalAngle = bezierTangentAngle(geo.from, geo.control, geo.to, 1);
     if (e.movingObject === 'plane') { marker = buildPlaneShape(color); marker.set({ left: geo.to.x, top: geo.to.y, angle: finalAngle + 90 }); }
@@ -1601,7 +1648,21 @@ function buildMapGroup(scope, events) {
   // group-relative position — needed for the moving route marker.
   const refShape = shapes[0];
   const preGroupLeft = refShape.left, preGroupTop = refShape.top;
-  const group = new fabric.Group(shapes, { subTargetCheck: false });
+  // objectCaching:false on the group AND on every shape built above (region Paths, route
+  // line/dots/marker, stat card rect+text) — see "Map rendering: vector-quality zoom" near
+  // the top of this file for the full root-cause writeup. Short version: this whole group is
+  // re-scaled every frame during any camera move, so a per-object bitmap cache buys nothing
+  // during the exact moments zoom quality matters (it just gets re-rendered every frame
+  // anyway) while remaining a correctness hazard the rest of the time — Fabric's cache is
+  // capped at a fixed total pixel budget (fabric.config.perfLimitSizeTotal, 2^21px)
+  // regardless of the object's actual on-screen size, so once zoom pushes a cached object
+  // past that budget, Fabric silently renders it into an undersized bitmap and stretches
+  // that bitmap to fill the real on-screen area — visible pixelation with the vector data
+  // itself untouched. Disabling caching on this bounded set of map shapes (never done
+  // globally — every other layer type keeps Fabric's default caching) makes Fabric draw them
+  // directly against the real canvas context every frame, at full backing-store resolution,
+  // so the map stays vector-sharp at any zoom/export resolution the camera or canvas can reach.
+  const group = new fabric.Group(shapes, { subTargetCheck: false, objectCaching: false });
   const groupOffsetX = preGroupLeft - refShape.left, groupOffsetY = preGroupTop - refShape.top;
   return { group, runtime: { regionPaths, routeRuntimes, statRuntimes, groupOffsetX, groupOffsetY } };
 }

@@ -375,6 +375,40 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   regenerate-in-place pattern as Dot-Grid/Pin/Org-Chart above — switching scope resets
   `events` (prefecture and country names don't overlap), and dragging/resizing the whole group
   works like any other layer via `scaleX`/`scaleY`.
+- **Map rendering: vector-quality zoom.** Every shape `buildMapGroup()` builds (region
+  `fabric.Path`s, route line/dots/marker, stat card rect+text) is constructed with
+  `objectCaching: false`, as is the top-level `fabric.Group` itself — the one deliberate,
+  narrow exception to Fabric's default object caching anywhere in this app (every other layer
+  type keeps caching on). Root cause this was fixed for: Fabric's object cache renders an
+  object once into an offscreen bitmap sized for its *current* effective scale and reuses that
+  bitmap on later frames, but the cache is capped at a fixed total pixel budget
+  (`fabric.config.perfLimitSizeTotal`, 2^21 ≈ 2.1 effective megapixels) regardless of the
+  object's actual on-screen size — once camera zoom pushed a cached map object past that
+  budget, Fabric silently shrank the cache bitmap to fit and then *stretched* it to cover the
+  real (larger) on-screen area, producing visible pixel blocks with the underlying vector data
+  completely untouched. Confirmed empirically, not guessed: a zoomed map group's internal
+  `zoomX` (the scale its cache was actually rendered at, 2.39) diverged from its real `scaleX`
+  (the scale it was actually displayed at, 5.91) after a camera zoom, and the cache canvas
+  measured exactly 1467×1429px — `1467*1429 = 2,096,343`, matching `perfLimitSizeTotal`
+  (2,097,152) almost to the pixel. This is *not* insufficient canvas backing resolution,
+  missing retina scaling, CSS stretching, or raster geometry — the canvas backing store
+  already matches the project's real export resolution 1:1, and the map is real vector path
+  data the whole way through. Disabling caching on just this bounded set of map shapes (not
+  globally) is a deliberate, reasoned exception rather than "caching is bad": this whole group
+  is re-scaled every frame during any camera move (`applyCameraState()`), so a bitmap cache
+  was already being re-rendered almost every frame anyway — verified caching was buying near-
+  zero benefit here (an in-page A/B comparison during a real zoom sequence measured a *higher*
+  frame rate with caching off, 47.8fps vs 37.3fps, because building/invalidating an offscreen
+  cache canvas every frame costs more than drawing the shapes directly) while remaining a live
+  correctness hazard the rest of the time. Verified at the actual worst case in this app, not
+  just the small region that first surfaced the bug: a full manual 6x zoom (`MAX_CAMERA_ZOOM`)
+  on Hokkaidō — the largest Japan prefecture, ~7x Kanagawa's bounding box — settles with no
+  cache canvas existing on any map shape at all (`hasCacheCanvas: false` unconditionally,
+  regardless of zoom level or canvas backing-store size — re-verified with the canvas
+  resized to a hypothetical 3840×2160 backing store), which is what makes this a real
+  architectural guarantee rather than "happened to be under budget at 1920×1080 today." If you
+  add a new shape type to the map module (a new event type's own marker, say), give it
+  `objectCaching: false` too, for the same reason.
 - **Geographic dataset registry** (`GEOGRAPHIC_DATASETS`, `mapRegionsFor()`,
   `normalizeMapScope()`, `app.js`) replaced a hardcoded `scope === 'japan' ? ... : ...` ternary
   (duplicated in three places) as the one source of truth for which map datasets exist. A
