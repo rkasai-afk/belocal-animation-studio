@@ -312,6 +312,120 @@ async function main() {
   const afterSeek2200 = await snapshotAt(2200);
   console.log('43. deterministic frame re-seek (0 -> 5000 -> 2200 matches direct 2200):', JSON.stringify(direct2200) === JSON.stringify(afterSeek2200) ? 'OK' : 'FAIL');
 
+  // --- 44-47. the declarative control-manifest renders real, working UI for every event
+  // type — not just correct underlying data. Drives actual DOM elements (text inputs, a
+  // checkbox, a range slider, a buttonGroup), the same way a creator would. ---
+  await loadTemplateByLabel('Flight Route');
+  await backToEditMode();
+  await selectActiveMap();
+  await page.waitForTimeout(200);
+  async function findEventCard(typeBadge) {
+    for (const c of await page.$$('#propsBody .source-box')) {
+      const badge = await c.$('.badge-visual');
+      if (badge && (await badge.textContent()) === typeBadge) return c;
+    }
+    return null;
+  }
+  const statCard = await findEventCard('STAT');
+  let statInputs = await statCard.$$('input[type=text]'); // label, value, unit, secondary, source, sourceUrl
+  await statInputs[4].fill('MIC Statistics Bureau, 2023'); await statInputs[4].dispatchEvent('change');
+  await page.waitForTimeout(150);
+  const statCard2 = await findEventCard('STAT');
+  statInputs = await statCard2.$$('input[type=text]');
+  await statInputs[5].fill('https://example.gov/stats'); await statInputs[5].dispatchEvent('change');
+  await page.waitForTimeout(150);
+  const sourceMeta = await page.evaluate(() => {
+    const ev = canvas.getObjects().find(o => o.data && o.data.map).data.map.events.find(e => e.type === 'stat');
+    return { source: ev.source, sourceUrl: ev.sourceUrl };
+  });
+  console.log('44. stat Source/Source URL fields write through the manifest UI:', JSON.stringify(sourceMeta),
+    sourceMeta.source === 'MIC Statistics Bureau, 2023' && sourceMeta.sourceUrl === 'https://example.gov/stats' ? 'OK' : 'FAIL');
+  const sourceUrlOnScreen = await page.evaluate(() => {
+    const obj = canvas.getObjects().find(o => o.data && o.data.map);
+    const s = obj.data.map._runtime.statRuntimes.get(obj.data.map.events.find(e => e.type === 'stat').id);
+    return s.sourceText.text;
+  });
+  console.log('44b. sourceUrl is editor metadata only, never appears on the rendered card:', sourceUrlOnScreen, !sourceUrlOnScreen.includes('example.gov') ? 'OK' : 'FAIL');
+
+  const zoomCard = await findEventCard('ZOOM');
+  await zoomCard.$eval('input[type=checkbox]', el => { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.waitForTimeout(150);
+  const zoomCard2 = await findEventCard('ZOOM');
+  const rangeCount = await zoomCard2.$$eval('input[type=range]', els => els.length);
+  await zoomCard2.$eval('input[type=range]', el => { el.value = '4'; el.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.waitForTimeout(150);
+  const zoomState = await page.evaluate(() => {
+    const ev = canvas.getObjects().find(o => o.data && o.data.map).data.map.events.find(e => e.type === 'zoom');
+    return { manual: ev.manual, manualZoom: ev.manualZoom };
+  });
+  console.log('45. zoom event: manual toggle reveals range sliders, slider writes manualZoom:', JSON.stringify(zoomState), rangeCount,
+    zoomState.manual === true && zoomState.manualZoom === 4 && rangeCount === 3 ? 'OK' : 'FAIL');
+
+  const routeCard = await findEventCard('ROUTE');
+  const styleLabels = await routeCard.$$eval('.row2 button', els => els.map(e => e.textContent.trim()));
+  const lineIdx = styleLabels.indexOf('Line');
+  await (await routeCard.$$('.row2 button'))[lineIdx].click();
+  await page.waitForTimeout(150);
+  const routeState = await page.evaluate(() => {
+    const ev = canvas.getObjects().find(o => o.data && o.data.map).data.map.events.find(e => e.type === 'route');
+    return { style: ev.style, movingObject: ev.movingObject };
+  });
+  console.log('46. route style buttonGroup click derives movingObject via manifest onSet hook:', JSON.stringify(routeState),
+    routeState.style === 'line' && routeState.movingObject === 'none' ? 'OK' : 'FAIL');
+
+  // --- 47. manual camera framing math: percentage-based pan/zoom converts to native map
+  // coordinates correctly, independent of any region-based automatic framing ---
+  const camMath = await page.evaluate(() => ({
+    centered: computeCameraTarget('japan', null, null, { zoom: 3, xPct: 0, yPct: 0 }),
+    shifted: computeCameraTarget('japan', null, null, { zoom: 3, xPct: 50, yPct: -25 }),
+    full: mapNativeBounds('japan'),
+  }));
+  const expectedDx = (camMath.full.maxX - camMath.full.minX) / 2 * 0.5;
+  const expectedDy = (camMath.full.maxY - camMath.full.minY) / 2 * -0.25;
+  console.log('47. manual camera pct->native conversion:', JSON.stringify(camMath.shifted), 'expected dx/dy', expectedDx, expectedDy,
+    camMath.centered.dxNative === 0 && Math.abs(camMath.shifted.dxNative - expectedDx) < 0.01 && Math.abs(camMath.shifted.dyNative - expectedDy) < 0.01 ? 'OK' : 'FAIL');
+  await backToEditMode();
+
+  // --- 48. determinism stress test: a longer non-monotonic seek sequence (matching the
+  // exact scrub pattern a creator dragging a scrubber back and forth would produce) must
+  // land on the identical state a completely fresh page load + single direct render of the
+  // same instant produces — proving PLAYBACK CLOCK (whatever produced the requested time,
+  // scrubbing forward/back/forward again) is fully decoupled from SCENE EVALUATOR (applyFrame
+  // itself has no memory of how it got there). Covers highlight color, camera transform,
+  // route marker position+rotation, and stat text/opacity together on one map layer. ---
+  function fullSnapshot(t) {
+    return page.evaluate((elapsed) => {
+      applyFrame(elapsed);
+      const obj = canvas.getObjects().find(o => o.data && o.data.map);
+      const rt = obj.data.map._runtime;
+      const highlightPath = rt.regionPaths.get('Hokkaidō');
+      const r = rt.routeRuntimes.get(obj.data.map.events.find(e => e.type === 'route').id);
+      const s = rt.statRuntimes.get(obj.data.map.events.find(e => e.type === 'stat').id);
+      return {
+        highlightFill: highlightPath.fill, highlightStroke: highlightPath.stroke,
+        mapLeft: obj.left, mapTop: obj.top, mapScaleX: obj.scaleX,
+        markerLeft: r.marker.left, markerTop: r.marker.top, markerAngle: r.marker.angle, markerOpacity: r.marker.opacity,
+        statText: s.valueText.text, statOpacity: s.valueText.opacity,
+      };
+    }, t);
+  }
+  await loadTemplateByLabel('Flight Route');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => captureBaseState());
+  for (const t of [0, 500, 2500, 900, 4200]) await fullSnapshot(t); // non-monotonic scrub, matching the spec's own example sequence
+  const seekResult = await fullSnapshot(1300);
+
+  await page.goto('file://' + path.resolve(__dirname, '..', 'index.html')); // fully fresh app state
+  await page.waitForTimeout(800);
+  await loadTemplateByLabel('Flight Route');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => captureBaseState());
+  const freshResult = await fullSnapshot(1300);
+
+  console.log('48. non-monotonic seek (0,500,2500,900,4200,1300) matches a fresh-page direct render of 1300:',
+    JSON.stringify(seekResult), 'vs', JSON.stringify(freshResult),
+    JSON.stringify(seekResult) === JSON.stringify(freshResult) ? 'OK' : 'FAIL');
+
   console.log('HAD ERROR:', hadError);
   await browser.close();
   if (hadError) process.exit(1);

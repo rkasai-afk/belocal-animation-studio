@@ -1352,11 +1352,21 @@ function tAtArcFraction(table, frac) {
 // single stage can push in keeps every zoom stage looking like a deliberate editorial choice.
 const MAX_CAMERA_ZOOM = 6;
 function computeCameraTarget(scope, regionName, padding, manual) {
-  if (manual && typeof manual.zoom === 'number') {
-    return { scaleMultiplier: Math.max(1, Math.min(MAX_CAMERA_ZOOM, manual.zoom)), dxNative: manual.x || 0, dyNative: manual.y || 0 };
-  }
   const full = mapNativeBounds(scope);
   const nativeCenter = { x: (full.minX + full.maxX) / 2, y: (full.minY + full.maxY) / 2 };
+  if (manual && typeof manual.zoom === 'number') {
+    // Manual framing is expressed to the creator as a percentage of the map's own half-width/
+    // half-height ("shift the camera by up to half the map"), never as raw native coordinates
+    // or a transform matrix — converting here, where `full` is already in scope, keeps that
+    // percentage-based UI value the one source of truth rather than needing the same
+    // half-width/half-height math duplicated wherever a manual event gets read.
+    const fullW = full.maxX - full.minX, fullH = full.maxY - full.minY;
+    return {
+      scaleMultiplier: Math.max(1, Math.min(MAX_CAMERA_ZOOM, manual.zoom)),
+      dxNative: (manual.xPct || 0) / 100 * (fullW / 2),
+      dyNative: (manual.yPct || 0) / 100 * (fullH / 2),
+    };
+  }
   if (!regionName) return { scaleMultiplier: 1, dxNative: 0, dyNative: 0 };
   const region = mapRegionsFor(scope).find(r => r.name.toLowerCase() === regionName.toLowerCase());
   if (!region) return { scaleMultiplier: 1, dxNative: 0, dyNative: 0 };
@@ -1472,7 +1482,14 @@ const MAP_EVENT_DEFAULTS = {
   highlight: () => ({ type: 'highlight', id: newMapEventId(), region: '', color: COLORS.tealLight, start: 0, duration: 700, dim: true }),
   zoom: () => ({ type: 'zoom', id: newMapEventId(), region: '', padding: 0.22, start: 0, duration: 1200 }),
   route: () => ({ type: 'route', id: newMapEventId(), from: '', to: '', style: 'arrow', curve: 'medium', movingObject: 'arrow', color: COLORS.amberLight, showTrail: true, start: 0, duration: 1800 }),
-  stat: () => ({ type: 'stat', id: newMapEventId(), region: '', label: 'Population', value: '', unit: '', secondary: '', source: '', countUp: true, start: 0, duration: 900 }),
+  // `source` is VISIBLE TEXT — buildStatCard() renders it as a small caption on the card
+  // itself. `sourceUrl` is EDITOR-ONLY METADATA — a reference for whoever is fact-checking the
+  // scene, saved into the project JSON like any other field, but never read by anything that
+  // draws to the canvas. Keeping these as two separate fields (rather than one that's
+  // sometimes shown and sometimes not) is what the "distinguish editor metadata from visible
+  // source text" requirement means in practice; a future `institution`/`dataset`/`confidence`
+  // provenance set would extend this same pattern rather than overload `source` further.
+  stat: () => ({ type: 'stat', id: newMapEventId(), region: '', label: 'Population', value: '', unit: '', secondary: '', source: '', sourceUrl: '', countUp: true, start: 0, duration: 900 }),
 };
 // Old saved projects/templates only ever had a flat `highlights` list and one static
 // `routeFrom`/`routeTo` — synthesize equivalent events (staggered so it still reads as a
@@ -1626,7 +1643,7 @@ function applyMapTimeline(obj, elapsed) {
   if (zoomEvents.length && cfg.baseTransform) {
     let camState = { scaleMultiplier: 1, dxNative: 0, dyNative: 0 };
     for (const e of zoomEvents) {
-      const target = computeCameraTarget(scope, e.region, e.padding, e.manualZoom != null ? { zoom: e.manualZoom, x: e.manualX, y: e.manualY } : null);
+      const target = computeCameraTarget(scope, e.region, e.padding, e.manual ? { zoom: e.manualZoom || 2, xPct: e.manualX, yPct: e.manualY } : null);
       if (elapsed < e.start) break;
       const t = elapsed >= e.start + e.duration ? 1 : easeInOutCubic((elapsed - e.start) / e.duration);
       camState = lerpCameraState(camState, target, t);
@@ -1753,23 +1770,163 @@ function toggleMapRegionHighlight(obj, regionName) {
 // ---- props panel: event-list editor ----------------------------------------------------
 function mapEventSummary(e) {
   if (e.type === 'highlight') return `Highlight ${e.region || '(pick a region)'}`;
-  if (e.type === 'zoom') return `Zoom to ${e.region || '(pick a region)'}`;
+  if (e.type === 'zoom') return e.manual ? 'Zoom (manual framing)' : `Zoom to ${e.region || '(pick a region)'}`;
   if (e.type === 'route') return `Route ${e.from || '?'} → ${e.to || '?'}`;
   if (e.type === 'stat') return `Stat: ${e.label || '(untitled)'}${e.value ? ' = ' + e.value : ''}`;
   return e.type;
 }
-function renderMapEventTiming(container, e, obj, onAfterChange) {
-  const row = document.createElement('div'); row.className = 'row2'; container.appendChild(row);
-  const c1 = document.createElement('div'); row.appendChild(c1);
-  const l1 = document.createElement('label'); l1.textContent = 'Start (sec)'; l1.style.fontSize = '11px'; c1.appendChild(l1);
-  const i1 = document.createElement('input'); i1.type = 'number'; i1.step = '0.1'; i1.min = 0; i1.value = (e.start / 1000).toFixed(1);
-  i1.addEventListener('change', () => { e.start = Math.max(0, Math.round(parseFloat(i1.value) * 1000) || 0); onAfterChange(); });
-  c1.appendChild(i1);
-  const c2 = document.createElement('div'); row.appendChild(c2);
-  const l2 = document.createElement('label'); l2.textContent = 'Duration (sec)'; l2.style.fontSize = '11px'; c2.appendChild(l2);
-  const i2 = document.createElement('input'); i2.type = 'number'; i2.step = '0.1'; i2.min = 0.1; i2.value = (e.duration / 1000).toFixed(1);
-  i2.addEventListener('change', () => { e.duration = Math.max(100, Math.round(parseFloat(i2.value) * 1000) || e.duration); onAfterChange(); });
-  c2.appendChild(i2);
+function mapEventTypeLabel(type) {
+  return { highlight: 'Highlight', zoom: 'Zoom', route: 'Route', stat: 'Statistic' }[type] || type;
+}
+// ---- declarative event control manifest -------------------------------------------------
+// What the creator is allowed to edit for each event type, as data rather than scattered
+// `if (e.type === 'highlight') {...} else if (...)` branches — adding a plain field (a new
+// text/select/checkbox/color/region/range control) to an event type is now a one-line manifest
+// entry, not new UI code. This describes semantic controls only ("Curve: Medium"), never raw
+// implementation properties (bezier control points, transform matrices) — see the `route`
+// entry's `curve` control for the pattern: one preset dropdown, not four coordinate inputs.
+// Composite side effects that a plain field can't express (route style also implying a
+// movingObject/curve default) are still declared here via a control's own `onSet` hook,
+// keeping the *data* declarative even though the effect itself is a few lines of logic.
+const MAP_EVENT_CONTROLS = {
+  highlight: [
+    { key: 'region', label: 'Region', type: 'region' },
+    { key: 'color', label: 'Highlight color', type: 'color' },
+    { key: 'dim', label: 'Dim other regions while this is highlighted', type: 'checkbox', default: true },
+    { key: 'start', label: 'Start (sec)', type: 'time' },
+    { key: 'duration', label: 'Duration (sec)', type: 'time' },
+  ],
+  zoom: [
+    { key: 'region', label: 'Zoom to region', type: 'region', showIf: e => !e.manual },
+    { key: 'padding', label: 'Padding around region', type: 'select', valueType: 'number', showIf: e => !e.manual,
+      options: [{ value: 0.35, label: 'Loose' }, { value: 0.22, label: 'Comfortable' }, { value: 0.1, label: 'Tight' }] },
+    { key: 'manual', label: 'Manually adjust framing instead of automatic', type: 'checkbox', default: false },
+    { key: 'manualZoom', label: 'Zoom amount', type: 'range', min: 1, max: MAX_CAMERA_ZOOM, step: 0.1, default: 2, showIf: e => !!e.manual },
+    { key: 'manualX', label: 'Horizontal framing', type: 'range', min: -50, max: 50, step: 1, default: 0, showIf: e => !!e.manual,
+      help: 'Shifts the camera left/right, as a % of the map width' },
+    { key: 'manualY', label: 'Vertical framing', type: 'range', min: -50, max: 50, step: 1, default: 0, showIf: e => !!e.manual,
+      help: 'Shifts the camera up/down, as a % of the map height' },
+    { key: 'start', label: 'Start (sec)', type: 'time' },
+    { key: 'duration', label: 'Duration (sec)', type: 'time' },
+  ],
+  route: [
+    { key: 'from', label: 'From', type: 'region', pairWithNext: true },
+    { key: 'to', label: 'To', type: 'region' },
+    { key: 'style', label: 'Style', type: 'buttonGroup', options: [{ value: 'line', label: 'Line' }, { value: 'arrow', label: 'Arrow' }, { value: 'flight', label: 'Flight' }],
+      onSet: (e, v) => { e.style = v; e.movingObject = v === 'flight' ? 'plane' : v === 'arrow' ? 'arrow' : 'none'; e.curve = v === 'flight' ? 'medium' : e.curve; } },
+    { key: 'curve', label: 'Curve', type: 'select', options: [{ value: 'straight', label: 'Straight' }, { value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }] },
+    { key: 'color', label: 'Route color', type: 'color' },
+    { key: 'start', label: 'Start (sec)', type: 'time' },
+    { key: 'duration', label: 'Duration (sec)', type: 'time' },
+  ],
+  stat: [
+    { key: 'label', label: 'Label', type: 'text', placeholder: 'Population' },
+    { key: 'value', label: 'Value', type: 'text', placeholder: '5.0M', pairWithNext: true },
+    { key: 'unit', label: 'Unit (optional)', type: 'text', placeholder: 'people' },
+    { key: 'secondary', label: 'Secondary line (optional)', type: 'text', placeholder: '↑ 12.4% vs last year' },
+    { key: 'source', label: 'Source (optional — shown small at the bottom of the card)', type: 'text', placeholder: 'MIC Statistics Bureau, 2023' },
+    { key: 'sourceUrl', label: 'Source URL (optional — editor reference only, never shown in the video)', type: 'text', placeholder: 'https://…' },
+    { key: 'region', label: 'Anchor to region (optional — otherwise shown at the bottom of the map)', type: 'region' },
+    { key: 'countUp', label: 'Count up to the value (numbers only)', type: 'checkbox', default: true },
+    { key: 'start', label: 'Start (sec)', type: 'time' },
+    { key: 'duration', label: 'Duration (sec)', type: 'time' },
+  ],
+};
+// One renderer for every control type below, instead of one hand-built form per event type.
+// `container` receives the finished field (label + input); `commit()` re-runs rebuildMap().
+function renderEventControl(container, control, e, commit, scope) {
+  const wrap = document.createElement('div');
+  const value = e[control.key] != null ? e[control.key] : control.default;
+  const setValue = (v) => { (control.onSet || ((ev, val) => { ev[control.key] = val; }))(e, v); commit(); };
+
+  if (control.type === 'checkbox') {
+    const label = document.createElement('label');
+    label.style.cssText = 'font-size:11.5px;margin-top:6px;display:flex;align-items:center;gap:6px;';
+    const inp = document.createElement('input'); inp.type = 'checkbox'; inp.style.width = 'auto'; inp.checked = value !== false;
+    inp.addEventListener('change', () => setValue(inp.checked));
+    label.appendChild(inp); label.appendChild(document.createTextNode(control.label));
+    wrap.appendChild(label);
+    container.appendChild(wrap);
+    return wrap;
+  }
+
+  const label = document.createElement('label'); label.textContent = control.label; label.style.fontSize = '11px'; wrap.appendChild(label);
+  if (control.type === 'time') {
+    const inp = document.createElement('input'); inp.type = 'number'; inp.step = '0.1'; inp.min = control.key === 'start' ? 0 : 0.1;
+    inp.value = ((value || 0) / 1000).toFixed(1);
+    inp.addEventListener('change', () => {
+      const ms = Math.round(parseFloat(inp.value) * 1000) || 0;
+      setValue(control.key === 'start' ? Math.max(0, ms) : Math.max(100, ms));
+    });
+    wrap.appendChild(inp);
+  } else if (control.type === 'text') {
+    const inp = document.createElement('input'); inp.type = 'text'; inp.value = value || ''; if (control.placeholder) inp.placeholder = control.placeholder;
+    inp.addEventListener('change', () => setValue(inp.value));
+    wrap.appendChild(inp);
+  } else if (control.type === 'color') {
+    const row = document.createElement('div'); row.className = 'swatches';
+    SWATCH_OPTIONS.forEach(o => {
+      const s = document.createElement('div'); s.className = 'swatch' + (value === o.val ? ' active' : ''); s.style.background = o.val; s.title = o.name;
+      s.addEventListener('click', () => setValue(o.val));
+      row.appendChild(s);
+    });
+    wrap.appendChild(row);
+  } else if (control.type === 'region') {
+    const sel = document.createElement('select');
+    const none = document.createElement('option'); none.value = ''; none.textContent = '— choose —'; sel.appendChild(none);
+    mapRegionsFor(scope).map(r => r.name).sort().forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+    sel.value = value || '';
+    sel.addEventListener('change', () => setValue(sel.value));
+    wrap.appendChild(sel);
+  } else if (control.type === 'select') {
+    const sel = document.createElement('select');
+    control.options.forEach(o => { const opt = document.createElement('option'); opt.value = o.value; opt.textContent = o.label; sel.appendChild(opt); });
+    sel.value = value != null ? value : control.options[0].value;
+    sel.addEventListener('change', () => setValue(control.valueType === 'number' ? parseFloat(sel.value) : sel.value));
+    wrap.appendChild(sel);
+  } else if (control.type === 'buttonGroup') {
+    const row = document.createElement('div'); row.className = 'row2';
+    control.options.forEach(o => {
+      const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
+      b.className = 'small' + (value === o.value ? ' primary' : ' ghost'); b.textContent = o.label;
+      b.addEventListener('click', () => setValue(o.value));
+      row.appendChild(b);
+    });
+    wrap.appendChild(row);
+  } else if (control.type === 'range') {
+    const row = document.createElement('div'); row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px';
+    const inp = document.createElement('input'); inp.type = 'range'; inp.min = control.min; inp.max = control.max; inp.step = control.step || 1;
+    inp.value = value != null ? value : control.default; inp.style.flex = '1';
+    const out = document.createElement('span'); out.style.fontSize = '11px'; out.style.minWidth = '2.5em'; out.textContent = inp.value;
+    inp.addEventListener('input', () => { out.textContent = inp.value; });
+    inp.addEventListener('change', () => setValue(parseFloat(inp.value)));
+    row.appendChild(inp); row.appendChild(out);
+    wrap.appendChild(row);
+    if (control.help) { const help = document.createElement('div'); help.className = 'empty-note'; help.style.fontSize = '10.5px'; help.textContent = control.help; wrap.appendChild(help); }
+  }
+  container.appendChild(wrap);
+  return wrap;
+}
+// Walks one event type's control manifest, honoring each control's `showIf` (the only
+// conditional-visibility mechanism this needs right now — see the zoom type's auto/manual
+// toggle) and `pairWithNext` (renders this control and the one after it side by side in a
+// row2, matching the From/To and Value/Unit layouts the old hand-built UI used).
+function renderEventControlsForType(body2, e, commit, scope) {
+  const controls = MAP_EVENT_CONTROLS[e.type] || [];
+  for (let i = 0; i < controls.length; i++) {
+    const c = controls[i];
+    if (c.showIf && !c.showIf(e)) continue;
+    if (c.pairWithNext) {
+      const row = document.createElement('div'); row.className = 'row2'; body2.appendChild(row);
+      const c1 = document.createElement('div'); row.appendChild(c1);
+      renderEventControl(c1, c, e, commit, scope);
+      const next = controls[++i];
+      const c2 = document.createElement('div'); row.appendChild(c2);
+      if (next) renderEventControl(c2, next, e, commit, scope);
+    } else {
+      renderEventControl(body2, c, e, commit, scope);
+    }
+  }
 }
 function renderMapEventList(body, obj) {
   const cfg = obj.data.map;
@@ -1795,106 +1952,12 @@ function renderMapEventList(body, obj) {
       head.appendChild(rmBtn);
 
       const body2 = document.createElement('div'); body2.style.marginTop = '8px'; card.appendChild(body2);
-      const regionNames = mapRegionsFor(cfg.scope).map(r => r.name).sort();
-      const makeRegionSelect = (value, onChange, allowNone) => {
-        const sel = document.createElement('select');
-        if (allowNone) { const o = document.createElement('option'); o.value = ''; o.textContent = '— choose —'; sel.appendChild(o); }
-        regionNames.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
-        sel.value = value || '';
-        sel.addEventListener('change', () => { onChange(sel.value); commit(); });
-        return sel;
-      };
-      const makeSwatchRow = (value, onChange) => {
-        const row = document.createElement('div'); row.className = 'swatches';
-        SWATCH_OPTIONS.forEach(o => {
-          const s = document.createElement('div'); s.className = 'swatch' + (value === o.val ? ' active' : '');
-          s.style.background = o.val; s.title = o.name;
-          s.addEventListener('click', () => { onChange(o.val); commit(); });
-          row.appendChild(s);
-        });
-        return row;
-      };
-
-      if (e.type === 'highlight') {
-        const l1 = document.createElement('label'); l1.textContent = 'Region'; l1.style.fontSize = '11px'; body2.appendChild(l1);
-        body2.appendChild(makeRegionSelect(e.region, (v) => { e.region = v; }, true));
-        const l2 = document.createElement('label'); l2.textContent = 'Highlight color'; l2.style.fontSize = '11px'; l2.style.marginTop = '6px'; body2.appendChild(l2);
-        body2.appendChild(makeSwatchRow(e.color, (v) => { e.color = v; }));
-        const dimLbl = document.createElement('label'); dimLbl.style.fontSize = '11.5px'; dimLbl.style.marginTop = '6px'; dimLbl.style.display = 'flex'; dimLbl.style.alignItems = 'center'; dimLbl.style.gap = '6px';
-        const dimCb = document.createElement('input'); dimCb.type = 'checkbox'; dimCb.checked = e.dim !== false; dimCb.style.width = 'auto';
-        dimCb.addEventListener('change', () => { e.dim = dimCb.checked; commit(); });
-        dimLbl.appendChild(dimCb); dimLbl.appendChild(document.createTextNode('Dim other regions while this is highlighted'));
-        body2.appendChild(dimLbl);
-      } else if (e.type === 'zoom') {
-        const l1 = document.createElement('label'); l1.textContent = 'Zoom to region'; l1.style.fontSize = '11px'; body2.appendChild(l1);
-        body2.appendChild(makeRegionSelect(e.region, (v) => { e.region = v; }, true));
-        const l2 = document.createElement('label'); l2.textContent = 'Padding around region'; l2.style.fontSize = '11px'; l2.style.marginTop = '6px'; body2.appendChild(l2);
-        const padSel = document.createElement('select');
-        [['0.35', 'Loose'], ['0.22', 'Comfortable'], ['0.1', 'Tight']].forEach(([v, label]) => { const o = document.createElement('option'); o.value = v; o.textContent = label; padSel.appendChild(o); });
-        padSel.value = String(e.padding != null ? e.padding : 0.22);
-        padSel.addEventListener('change', () => { e.padding = parseFloat(padSel.value); commit(); });
-        body2.appendChild(padSel);
-      } else if (e.type === 'route') {
-        const row1 = document.createElement('div'); row1.className = 'row2'; body2.appendChild(row1);
-        const fw = document.createElement('div'); const fl = document.createElement('label'); fl.textContent = 'From'; fl.style.fontSize = '11px'; fw.appendChild(fl); fw.appendChild(makeRegionSelect(e.from, (v) => { e.from = v; }, true)); row1.appendChild(fw);
-        const tw = document.createElement('div'); const tl = document.createElement('label'); tl.textContent = 'To'; tl.style.fontSize = '11px'; tw.appendChild(tl); tw.appendChild(makeRegionSelect(e.to, (v) => { e.to = v; }, true)); row1.appendChild(tw);
-
-        const l2 = document.createElement('label'); l2.textContent = 'Style'; l2.style.fontSize = '11px'; l2.style.marginTop = '6px'; body2.appendChild(l2);
-        const styleRow = document.createElement('div'); styleRow.className = 'row2'; body2.appendChild(styleRow);
-        [['line', 'Line'], ['arrow', 'Arrow'], ['flight', 'Flight']].forEach(([v, label]) => {
-          const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
-          b.className = 'small' + (e.style === v ? ' primary' : ' ghost'); b.textContent = label;
-          b.addEventListener('click', () => {
-            e.style = v;
-            e.movingObject = v === 'flight' ? 'plane' : v === 'arrow' ? 'arrow' : 'none';
-            e.curve = v === 'flight' ? 'medium' : e.curve;
-            commit();
-          });
-          styleRow.appendChild(b);
-        });
-
-        const l3 = document.createElement('label'); l3.textContent = 'Curve'; l3.style.fontSize = '11px'; l3.style.marginTop = '6px'; body2.appendChild(l3);
-        const curveSel = document.createElement('select');
-        ['straight', 'low', 'medium', 'high'].forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v[0].toUpperCase() + v.slice(1); curveSel.appendChild(o); });
-        curveSel.value = e.curve || 'medium';
-        curveSel.addEventListener('change', () => { e.curve = curveSel.value; commit(); });
-        body2.appendChild(curveSel);
-
-        const l4 = document.createElement('label'); l4.textContent = 'Route color'; l4.style.fontSize = '11px'; l4.style.marginTop = '6px'; body2.appendChild(l4);
-        body2.appendChild(makeSwatchRow(e.color, (v) => { e.color = v; }));
-      } else if (e.type === 'stat') {
-        const l1 = document.createElement('label'); l1.textContent = 'Label'; l1.style.fontSize = '11px'; body2.appendChild(l1);
-        const inpLabel = document.createElement('input'); inpLabel.type = 'text'; inpLabel.value = e.label || ''; inpLabel.placeholder = 'Population';
-        inpLabel.addEventListener('change', () => { e.label = inpLabel.value; commit(); });
-        body2.appendChild(inpLabel);
-        const row2 = document.createElement('div'); row2.className = 'row2'; row2.style.marginTop = '6px'; body2.appendChild(row2);
-        const vw = document.createElement('div'); const vl = document.createElement('label'); vl.textContent = 'Value'; vl.style.fontSize = '11px'; vw.appendChild(vl);
-        const inpVal = document.createElement('input'); inpVal.type = 'text'; inpVal.value = e.value || ''; inpVal.placeholder = '5.0M'; inpVal.addEventListener('change', () => { e.value = inpVal.value; commit(); }); vw.appendChild(inpVal); row2.appendChild(vw);
-        const uw = document.createElement('div'); const ul = document.createElement('label'); ul.textContent = 'Unit (optional)'; ul.style.fontSize = '11px'; uw.appendChild(ul);
-        const inpUnit = document.createElement('input'); inpUnit.type = 'text'; inpUnit.value = e.unit || ''; inpUnit.placeholder = 'people'; inpUnit.addEventListener('change', () => { e.unit = inpUnit.value; commit(); }); uw.appendChild(inpUnit); row2.appendChild(uw);
-        const l3 = document.createElement('label'); l3.textContent = 'Secondary line (optional)'; l3.style.fontSize = '11px'; l3.style.marginTop = '6px'; body2.appendChild(l3);
-        const inpSec = document.createElement('input'); inpSec.type = 'text'; inpSec.value = e.secondary || ''; inpSec.placeholder = '↑ 12.4% vs last year';
-        inpSec.addEventListener('change', () => { e.secondary = inpSec.value; commit(); });
-        body2.appendChild(inpSec);
-        const lSrc = document.createElement('label'); lSrc.textContent = 'Source (optional — shown small at the bottom of the card)'; lSrc.style.fontSize = '11px'; lSrc.style.marginTop = '6px'; body2.appendChild(lSrc);
-        const inpSrc = document.createElement('input'); inpSrc.type = 'text'; inpSrc.value = e.source || ''; inpSrc.placeholder = 'MIC Statistics Bureau, 2023';
-        inpSrc.addEventListener('change', () => { e.source = inpSrc.value; commit(); });
-        body2.appendChild(inpSrc);
-        const l4 = document.createElement('label'); l4.textContent = 'Anchor to region (optional — otherwise shown at the bottom of the map)'; l4.style.fontSize = '11px'; l4.style.marginTop = '6px'; body2.appendChild(l4);
-        body2.appendChild(makeRegionSelect(e.region, (v) => { e.region = v; }, true));
-        const cuLbl = document.createElement('label'); cuLbl.style.fontSize = '11.5px'; cuLbl.style.marginTop = '6px'; cuLbl.style.display = 'flex'; cuLbl.style.alignItems = 'center'; cuLbl.style.gap = '6px';
-        const cuCb = document.createElement('input'); cuCb.type = 'checkbox'; cuCb.checked = e.countUp !== false; cuCb.style.width = 'auto';
-        cuCb.addEventListener('change', () => { e.countUp = cuCb.checked; commit(); });
-        cuLbl.appendChild(cuCb); cuLbl.appendChild(document.createTextNode('Count up to the value (numbers only)'));
-        body2.appendChild(cuLbl);
-      }
-
-      renderMapEventTiming(body2, e, obj, commit);
+      renderEventControlsForType(body2, e, commit, cfg.scope);
     });
 
     const addRow = document.createElement('div'); addRow.className = 'add-row'; addRow.style.marginTop = '4px'; wrap.appendChild(addRow);
-    [['highlight', '+ Highlight'], ['zoom', '+ Zoom'], ['route', '+ Route'], ['stat', '+ Statistic']].forEach(([type, label]) => {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'small'; b.textContent = label;
+    Object.keys(MAP_EVENT_CONTROLS).forEach((type) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'small'; b.textContent = '+ ' + mapEventTypeLabel(type);
       b.addEventListener('click', () => {
         const prevEnd = cfg.events.reduce((m, e) => Math.max(m, e.start + e.duration), 0);
         const ev = MAP_EVENT_DEFAULTS[type]();

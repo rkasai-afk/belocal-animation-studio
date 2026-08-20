@@ -124,8 +124,14 @@ tests/test_v14.js             Playwright regression: Map Graphic's events-based 
                                checked for overflow across all 3 aspect ratios like test_v5's
                                pattern, save/load round-trip of the full events array, a stat
                                card's optional secondary+source lines staying inside the card,
-                               and applyFrame(t) determinism — scrubbing 0 -> 5000 -> 2200
-                               reproduces the exact same state as rendering 2200 directly)
+                               applyFrame(t) determinism — scrubbing 0 -> 5000 -> 2200
+                               reproduces the exact same state as rendering 2200 directly — the
+                               declarative control manifest driving real DOM interaction for
+                               every control type (text, checkbox, range, buttonGroup) across
+                               all four event types, manual camera pct-to-native-coordinate
+                               conversion, and a longer non-monotonic seek stress test whose
+                               result must match a completely fresh page load's direct render
+                               of the same instant)
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -355,6 +361,44 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   regenerate-in-place pattern as Dot-Grid/Pin/Org-Chart above — switching scope resets
   `events` (prefecture and country names don't overlap), and dragging/resizing the whole group
   works like any other layer via `scaleX`/`scaleY`.
+- **Map event control manifest** (`MAP_EVENT_CONTROLS`, `renderEventControl()`,
+  `renderEventControlsForType()`, `app.js`) is what generates the props-panel UI for every map
+  event type (`highlight`/`zoom`/`route`/`stat`) — adding a plain field to an event type (a new
+  text/select/checkbox/color/region/range control) is a one-line manifest entry, not new UI
+  code. Each control declares `key`/`label`/`type` and type-specific fields (`options` for
+  `select`/`buttonGroup`, `min`/`max`/`step` for `range`, `placeholder` for `text`); the
+  manifest describes *semantic* controls a creator edits ("Curve: Medium"), never raw
+  implementation properties (bezier control points, transform matrices) — see the `route`
+  entry's `curve` control (one preset dropdown) versus what it would look like exposing the
+  underlying bezier control point directly. Two escape hatches keep this from needing a bigger
+  framework: `showIf(e)` is the only conditional-visibility mechanism (used by the zoom type's
+  auto/manual toggle — the manual-framing `range` controls are hidden until `e.manual` is
+  checked) and `onSet(e, v)` lets one control's change imply a composite update a plain
+  `e[key]=v` can't express (route's `style` buttonGroup also derives `movingObject` and a
+  default `curve`) — both are still *data* attached to the field descriptor, not a new branch
+  in the renderer. `pairWithNext: true` renders a control side-by-side with the one after it in
+  a `row2` (From/To, Value/Unit) — the only layout hint this needs right now. Adding a genuinely
+  new control *type* (not just a new field) still means a new branch in `renderEventControl()`
+  itself — the manifest removes per-event-type duplication, not the primitive-control set.
+- **PLAYBACK CLOCK vs SCENE EVALUATOR** is an explicit split, not just an implementation
+  detail. The playback clock is whatever produces a requested elapsed-millisecond value —
+  `loop()`'s `requestAnimationFrame` during Preview/Record, or the timeline scrubber dragging
+  directly — and it may jump around non-monotonically (a user scrubbing back and forth). The
+  scene evaluator is `applyFrame(elapsed)` (and, for a Map Graphic, `applyMapTimeline()` inside
+  it): given one prior `captureBaseState()` call, it is a **pure function of `elapsed`** — every
+  object's state is recomputed fresh from `elapsed` and the project's own config every call,
+  with no accumulated/carried-over state from previous calls. This is verified, not assumed:
+  `tests/test_v14.js` #43 seeks `0 -> 5000 -> 2200` and diffs against a direct render of 2200;
+  #48 runs a longer non-monotonic sequence (`0, 500, 2500, 900, 4200, 1300`) and diffs the
+  result against a *completely fresh page load's* direct render of 1300, across highlight
+  color, camera transform, route marker position/rotation, and stat text/opacity together.
+  `requestAnimationFrame` remains the right choice for interactive playback — nothing here
+  argues for a frame-indexed renderer — but the reason scrubbing, recording, and this test
+  suite all behave correctly is that the clock and the evaluator never share mutable state.
+  The one thing that *would* break this: calling `captureBaseState()` more than once per
+  playback/scrub session (each call re-captures each object's *current* — possibly
+  already-animated — properties as the new "base", corrupting later evaluations); it's called
+  exactly once, from `startPlayback()` and `beginScrub()`.
 - **Custom font import** registers via the `FontFace` API (`registerCustomFont`) and is
   persisted into saved `.json` projects as base64 data URLs (`customFonts` array) so a
   reloaded project re-registers the same fonts before enlivening objects.
@@ -459,15 +503,6 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   each one needs before it's real. Production-document import (`.docx`/`.pdf`) *is* built —
   see that same file's "Import Production Document" section for the field mapping and known
   limitations.
-- **Map Graphic control manifest.** The event props panel (`renderMapEventList()`) is hand-
-  coded per event type (`if (e.type === 'highlight') {...} else if (e.type === 'zoom') {...}`
-  etc) rather than generated from a declarative field manifest per type. It works correctly and
-  is covered by tests, but a manifest-driven Inspector (each event type declaring its own
-  `{key, label, control: 'region'|'swatch'|'select'|'text'|'toggle', ...}` list, with one
-  generic renderer walking it) would remove the duplication and make a future event type
-  (e.g. a `label` or `callout` event) cheaper to add. Deferred rather than risked mid-fix —
-  converting working, tested UI code to a new abstraction is a good next isolated task, not
-  something to bundle into a bug-fix pass.
 - **Historical map layer.** No historical (pre-modern-prefecture) boundary data is vendored,
   and none should be fabricated — `src/map_data.js`'s header already documents its sources for
   the *modern* boundaries it does ship. A historical layer needs its own vetted dataset (the
@@ -480,14 +515,12 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   extension point is the region dataset, not the animation engine. Confidence/provenance
   metadata (source, date range, disputed/approximate) has no home in the schema yet; it would
   attach to the region dataset entries, not to individual events.
-- **Manual camera override is engine-only, not exposed in the UI.** `computeCameraTarget(scope,
-  region, padding, manual)` already accepts `{zoom, x, y}` to bypass automatic region framing
-  (and a zoom event's `manualZoom`/`manualX`/`manualY` fields wire straight into it), but
-  `renderMapEventList()`'s zoom-event UI only ever offers the region dropdown + padding preset.
-  This is deliberate scoping, not an oversight: automatic region-based framing is the Level-1
-  "story editor" workflow this tool is built around (per CLAUDE.md's "keep the props panel's
-  language plain" principle below), and hand-tuned pan/zoom is Level-2 refinement that doesn't
-  have a plain-language UI yet. The engine-side hook exists for whenever that's worth building.
+- **Declarative control manifest for a future event type.** `MAP_EVENT_CONTROLS` (see "Map
+  event control manifest" below) covers every control the current four event types need
+  (`text`/`checkbox`/`color`/`region`/`select`/`buttonGroup`/`range`/`time`). A genuinely new
+  control shape (e.g. a multi-line text area, a date picker for a future historical event)
+  would still need a new branch added to `renderEventControl()` — the manifest removes the
+  *per-event-type* duplication, not the need to ever add a new primitive control renderer.
 
 ## Who this is for
 
