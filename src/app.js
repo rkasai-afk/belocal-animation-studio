@@ -231,6 +231,13 @@ function updateSafeZoneOverlay() {
 let bgMediaObj = null;   // fabric.Image for background (image or video-backed)
 let bgVideoEl = null;    // underlying <video> element if background is a video
 let customFonts = [];    // {family, dataUrl, mime} — imported by the user
+// dataSources: {[id]: {id, name, type:'csv', timeField, entityField, valueField, unit, source,
+// sourceUrl, records}} — user-pasted data, project-level like customFonts above. Shares the
+// exact {records, timeField, entityField, valueField} shape TEMPORAL_FIXTURES entries already
+// use, which is what lets temporalSourceFor() (see "Temporal data foundation") read from either
+// with no special-casing. See "Data Source Registry" near PROJECT SAVE / LOAD for the paste-CSV
+// UI and validation.
+let dataSources = {};
 
 /* ============ TEMPLATE PRESETS ============ */
 function T(text, opts) {
@@ -1122,11 +1129,15 @@ function renderEventControl(container, control, e, commit, scope) {
 
   const label = document.createElement('label'); label.textContent = control.label; label.style.fontSize = '11px'; wrap.appendChild(label);
   if (control.type === 'time') {
-    const inp = document.createElement('input'); inp.type = 'number'; inp.step = '0.1'; inp.min = control.key === 'start' ? 0 : 0.1;
+    // `timeKind` disambiguates a DURATION (floored at 100ms, can't be 0) from a POINT in time
+    // (can legitimately be 0) — defaults to the map events' own start/duration convention when
+    // unset, so every existing MAP_EVENT_CONTROLS entry keeps its exact prior behavior.
+    const isDuration = control.timeKind ? control.timeKind === 'duration' : control.key === 'duration';
+    const inp = document.createElement('input'); inp.type = 'number'; inp.step = '0.1'; inp.min = isDuration ? 0.1 : 0;
     inp.value = ((value || 0) / 1000).toFixed(1);
     inp.addEventListener('change', () => {
       const ms = Math.round(parseFloat(inp.value) * 1000) || 0;
-      setValue(control.key === 'start' ? Math.max(0, ms) : Math.max(100, ms));
+      setValue(isDuration ? Math.max(100, ms) : Math.max(0, ms));
     });
     wrap.appendChild(inp);
   } else if (control.type === 'text') {
@@ -1149,9 +1160,14 @@ function renderEventControl(container, control, e, commit, scope) {
     sel.addEventListener('change', () => setValue(sel.value));
     wrap.appendChild(sel);
   } else if (control.type === 'select') {
+    // `options` (static array) or `optionsFor(target)` (computed at render time, e.g. from the
+    // current data source registry / that source's own entity list) — same descriptor shape,
+    // just resolved lazily for controls whose choices can't be known ahead of time.
     const sel = document.createElement('select');
-    control.options.forEach(o => { const opt = document.createElement('option'); opt.value = o.value; opt.textContent = o.label; sel.appendChild(opt); });
-    sel.value = value != null ? value : control.options[0].value;
+    const opts = control.options || (control.optionsFor ? control.optionsFor(e) : []);
+    if (!opts.length) { const none = document.createElement('option'); none.value = ''; none.textContent = '— none available —'; sel.appendChild(none); }
+    opts.forEach(o => { const opt = document.createElement('option'); opt.value = o.value; opt.textContent = o.label; sel.appendChild(opt); });
+    sel.value = value != null ? value : (opts[0] ? opts[0].value : '');
     sel.addEventListener('change', () => setValue(control.valueType === 'number' ? parseFloat(sel.value) : sel.value));
     wrap.appendChild(sel);
   } else if (control.type === 'buttonGroup') {
@@ -1177,26 +1193,31 @@ function renderEventControl(container, control, e, commit, scope) {
   container.appendChild(wrap);
   return wrap;
 }
-// Walks one event type's control manifest, honoring each control's `showIf` (the only
-// conditional-visibility mechanism this needs right now — see the zoom type's auto/manual
-// toggle) and `pairWithNext` (renders this control and the one after it side by side in a
-// row2, matching the From/To and Value/Unit layouts the old hand-built UI used).
-function renderEventControlsForType(body2, e, commit, scope) {
-  const controls = MAP_EVENT_CONTROLS[e.type] || [];
+// Walks ANY control manifest (an array of control descriptors, not just a map event type's)
+// against ANY target object, honoring each control's `showIf` (the only conditional-visibility
+// mechanism this needs right now — see the zoom type's auto/manual toggle) and `pairWithNext`
+// (renders this control and the one after it side by side in a row2, matching the From/To and
+// Value/Unit layouts the old hand-built UI used). Shared by the map event editor below AND the
+// temporalLine/temporalStat props panels (see TEMPORAL_LINE_CONTROLS/TEMPORAL_STAT_CONTROLS) —
+// same declarative-manifest architecture, not a second implementation of it.
+function renderControlList(body2, controls, target, commit, scope) {
   for (let i = 0; i < controls.length; i++) {
     const c = controls[i];
-    if (c.showIf && !c.showIf(e)) continue;
+    if (c.showIf && !c.showIf(target)) continue;
     if (c.pairWithNext) {
       const row = document.createElement('div'); row.className = 'row2'; body2.appendChild(row);
       const c1 = document.createElement('div'); row.appendChild(c1);
-      renderEventControl(c1, c, e, commit, scope);
+      renderEventControl(c1, c, target, commit, scope);
       const next = controls[++i];
       const c2 = document.createElement('div'); row.appendChild(c2);
-      if (next) renderEventControl(c2, next, e, commit, scope);
+      if (next) renderEventControl(c2, next, target, commit, scope);
     } else {
-      renderEventControl(body2, c, e, commit, scope);
+      renderEventControl(body2, c, target, commit, scope);
     }
   }
+}
+function renderEventControlsForType(body2, e, commit, scope) {
+  renderControlList(body2, MAP_EVENT_CONTROLS[e.type] || [], e, commit, scope);
 }
 function renderMapEventList(body, obj) {
   const cfg = obj.data.map;
@@ -1368,11 +1389,252 @@ function createTemporalDataSource(cfg) {
 // Resolves a layer config's {sourceId, videoStart, videoEnd} into a live TemporalDataSource —
 // the one place that knows how to turn a fixture/dataset id into records, so LineView and
 // StatView below both go through it rather than each reaching into TEMPORAL_FIXTURES directly.
+// Checks the built-in TEMPORAL_FIXTURES first, then the project's own user-pasted dataSources
+// registry — both share the same {records, timeField, entityField, valueField} shape, so this
+// needed no branch for "which kind of source", just a second place to look.
 function temporalSourceFor(dataCfg) {
-  const fixture = TEMPORAL_FIXTURES[dataCfg.sourceId];
+  const fixture = TEMPORAL_FIXTURES[dataCfg.sourceId] || dataSources[dataCfg.sourceId];
   if (!fixture) return null;
   return createTemporalDataSource(Object.assign({}, fixture, { videoStart: dataCfg.videoStart, videoEnd: dataCfg.videoEnd }));
 }
+// Every source a temporalLine/temporalStat layer's "Data source" control can pick from —
+// built-ins first (clearly fixture-labeled), then whatever the user has pasted in this project.
+function allTemporalSources() {
+  const out = Object.keys(TEMPORAL_FIXTURES).map(id => ({ value: id, label: TEMPORAL_FIXTURES[id].label || id }));
+  Object.keys(dataSources).forEach(id => out.push({ value: id, label: dataSources[id].name }));
+  return out;
+}
+
+/* ================================================================================
+   DATA SOURCE REGISTRY — paste-a-CSV data entry for temporalLine/temporalStat layers
+   ================================================================================
+   Deliberately NOT a spreadsheet editor, a database, or a formula/join engine — a project-
+   level list of {name, records[], schema} entries, each built from a plain CSV paste plus
+   three field-mapping choices (which column is time / entity / value). This is the ONLY way
+   a creator gets their own data into a temporalLine/temporalStat layer beyond the built-in
+   TEMPORAL_FIXTURES test data; no file-import pipeline, no automatic web/statistics-bureau
+   lookup, no formulas. Validation never silently converts a malformed value to zero — a bad
+   row is skipped with a warning the creator can see, not folded into the dataset as a false 0.
+   ================================================================================ */
+// Minimal CSV parser — handles quoted fields (with escaped "" and embedded commas/newlines)
+// and both \n and \r\n line endings. No streaming, no dialect options: pasted text is always
+// small enough (a few dozen to a few hundred rows) to parse in one pass.
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  const s = String(text || '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') { if (s[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; } }
+      else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && s[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  if (!rows.length) return { headers: [], rows: [] };
+  return { headers: rows[0].map(h => h.trim()), rows: rows.slice(1) };
+}
+// Guesses which headers are most likely time/entity/value, for pre-filling the field-mapping
+// selects — a convenience only, the creator can always pick a different column. Matches by
+// name pattern first; any field left unmatched gets whichever header pattern-matching hasn't
+// already claimed, rather than every unmatched guess collapsing onto the same column.
+function guessFields(headers) {
+  const patterns = {
+    time: /^(year|yr|date|time|period)$/i,
+    entity: /^(region|entity|name|category|country|prefecture|pref|city|area|group)$/i,
+    value: /^(value|val|amount|count|total|population|pop|index|idx)$/i,
+  };
+  const guess = {};
+  ['time', 'entity', 'value'].forEach(kind => { guess[kind] = headers.find(h => patterns[kind].test(h)); });
+  const used = new Set(Object.values(guess).filter(Boolean));
+  const remaining = headers.filter(h => !used.has(h));
+  guess.time = guess.time || remaining.shift() || headers[0];
+  guess.entity = guess.entity || remaining.shift() || headers[0];
+  guess.value = guess.value || remaining.shift() || headers[headers.length - 1];
+  return guess;
+}
+// Builds a clean records[] from parsed CSV rows against the chosen field mapping. Never
+// coerces a bad value to 0 — every row that fails a check is skipped and reported as a
+// warning, not silently included as zero (see CLAUDE.md's "missing data" note). Also flags
+// (informationally only — never blocks) duplicate entity+time rows and irregular intervals.
+function validateAndBuildRecords(headers, rows, timeField, entityField, valueField) {
+  const errors = [], warnings = [];
+  const tIdx = headers.indexOf(timeField), eIdx = headers.indexOf(entityField), vIdx = headers.indexOf(valueField);
+  if (tIdx === -1) errors.push(`Time field "${timeField}" was not found in the CSV's header row.`);
+  if (eIdx === -1) errors.push(`Entity field "${entityField}" was not found in the CSV's header row.`);
+  if (vIdx === -1) errors.push(`Value field "${valueField}" was not found in the CSV's header row.`);
+  if (errors.length) return { errors, warnings, records: [] };
+  const records = [];
+  const seen = new Set();
+  const timesByEntity = new Map();
+  rows.forEach((r, i) => {
+    const rowNum = i + 2; // 1-indexed data row, plus the header row above it
+    if (r.every(c => (c || '').trim() === '')) return; // blank line — skip silently, not a warning
+    const rawTime = (r[tIdx] || '').trim(), rawEntity = (r[eIdx] || '').trim(), rawValue = (r[vIdx] || '').trim();
+    if (!rawEntity) { warnings.push(`Row ${rowNum}: missing entity — skipped.`); return; }
+    if (rawTime === '' || isNaN(Number(rawTime))) { warnings.push(`Row ${rowNum}: time "${rawTime}" isn't a number — skipped.`); return; }
+    if (rawValue === '' || isNaN(Number(rawValue))) { warnings.push(`Row ${rowNum}: value is missing or not a number — skipped (never treated as zero).`); return; }
+    const time = Number(rawTime), value = Number(rawValue);
+    const key = rawEntity + '|' + time;
+    if (seen.has(key)) { warnings.push(`Row ${rowNum}: duplicate entry for ${rawEntity} at ${time} — kept the first, this one skipped.`); return; }
+    seen.add(key);
+    records.push({ [entityField]: rawEntity, [timeField]: time, [valueField]: value });
+    if (!timesByEntity.has(rawEntity)) timesByEntity.set(rawEntity, []);
+    timesByEntity.get(rawEntity).push(time);
+  });
+  timesByEntity.forEach((times, entity) => {
+    times.sort((a, b) => a - b);
+    if (times.length < 3) return;
+    const gaps = []; for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
+    if (gaps.some(g => Math.abs(g - gaps[0]) > 1e-9)) {
+      warnings.push(`${entity}: time intervals aren't evenly spaced (${gaps.join(', ')}) — interpolation still works, but the reveal won't move at a perfectly even pace between points.`);
+    }
+  });
+  if (!records.length) errors.push('No usable rows found — check that the field mapping matches your columns.');
+  return { errors, warnings, records };
+}
+function newDataSourceId() { return 'ds_' + Math.random().toString(36).slice(2, 9); }
+// Returns {ok, id?, errors, warnings}. On failure (ok:false), errors explains why and nothing
+// is added to the registry — warnings may still be present even on success (rows were
+// skipped, but enough good data remained to build a usable source).
+function addDataSourceFromForm(input) {
+  const parsed = parseCSV(input.csvText);
+  if (!parsed.headers.length) return { ok: false, errors: ['Could not read any data — paste CSV text with a header row first.'], warnings: [] };
+  const { errors, warnings, records } = validateAndBuildRecords(parsed.headers, parsed.rows, input.timeField, input.entityField, input.valueField);
+  if (errors.length) return { ok: false, errors, warnings };
+  const id = newDataSourceId();
+  dataSources[id] = {
+    id, name: input.name || 'Untitled data source', type: 'csv',
+    timeField: input.timeField, entityField: input.entityField, valueField: input.valueField,
+    unit: input.unit || '', source: input.source || '', sourceUrl: input.sourceUrl || '',
+    records,
+  };
+  return { ok: true, id, errors, warnings };
+}
+// ---- Data Sources panel UI ---------------------------------------------------------------
+function renderDataSourceList() {
+  const el = document.getElementById('dataSourceList');
+  if (!el) return;
+  el.innerHTML = '';
+  const ids = Object.keys(dataSources);
+  if (!ids.length) { el.innerHTML = '<div class="empty-note">No data sources yet — add one below, or use the built-in fixture data on any Temporal layer.</div>'; return; }
+  ids.forEach(id => {
+    const ds = dataSources[id];
+    const entityCount = new Set(ds.records.map(r => r[ds.entityField])).size;
+    const card = document.createElement('div'); card.className = 'source-box'; card.style.marginBottom = '8px'; el.appendChild(card);
+    const head = document.createElement('div'); head.style.display = 'flex'; head.style.alignItems = 'center'; head.style.gap = '6px'; card.appendChild(head);
+    const title = document.createElement('span'); title.style.flex = '1'; title.style.fontSize = '12px'; title.style.fontWeight = '700'; title.textContent = ds.name; head.appendChild(title);
+    const rmBtn = document.createElement('button'); rmBtn.type = 'button'; rmBtn.className = 'small ghost'; rmBtn.textContent = '✕'; rmBtn.title = 'Remove data source';
+    rmBtn.addEventListener('click', () => { delete dataSources[id]; renderDataSourceList(); });
+    head.appendChild(rmBtn);
+    const meta = document.createElement('div'); meta.className = 'empty-note'; meta.style.marginTop = '4px';
+    meta.textContent = `${ds.records.length} rows · ${entityCount} entit${entityCount === 1 ? 'y' : 'ies'}${ds.unit ? ' · ' + ds.unit : ''}${ds.source ? ' · ' + ds.source : ''}`;
+    card.appendChild(meta);
+  });
+}
+function renderDataSourceForm() {
+  const wrap = document.getElementById('dataSourceForm');
+  const addBtn = document.getElementById('btnAddDataSource');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  let parsedHeaders = [];
+
+  const lblName = document.createElement('label'); lblName.textContent = 'Name'; wrap.appendChild(lblName);
+  const inpName = document.createElement('input'); inpName.type = 'text'; inpName.placeholder = 'e.g. Prefecture population'; wrap.appendChild(inpName);
+
+  const lblCsv = document.createElement('label'); lblCsv.textContent = 'Paste CSV (first row = column names)'; lblCsv.style.marginTop = '10px'; wrap.appendChild(lblCsv);
+  const ta = document.createElement('textarea'); ta.style.minHeight = '110px'; ta.placeholder = 'region,year,value\nHokkaidō,2000,100\nHokkaidō,2010,91\nOkinawa,2000,100\nOkinawa,2010,109'; wrap.appendChild(ta);
+
+  const mapWrap = document.createElement('div'); mapWrap.style.display = 'none'; mapWrap.style.marginTop = '10px'; wrap.appendChild(mapWrap);
+  const rowFields = document.createElement('div'); rowFields.className = 'row2'; mapWrap.appendChild(rowFields);
+  function fieldSelect(labelText, kind) {
+    const col = document.createElement('div'); rowFields.appendChild(col);
+    const lbl = document.createElement('label'); lbl.textContent = labelText; col.appendChild(lbl);
+    const sel = document.createElement('select'); col.appendChild(sel);
+    sel._kind = kind;
+    return sel;
+  }
+  const selTime = fieldSelect('Time field', 'time');
+  const selEntity = fieldSelect('Entity field', 'entity');
+  const rowFields2 = document.createElement('div'); rowFields2.className = 'row2'; mapWrap.appendChild(rowFields2);
+  const colValue = document.createElement('div'); rowFields2.appendChild(colValue);
+  const lblValue = document.createElement('label'); lblValue.textContent = 'Value field'; colValue.appendChild(lblValue);
+  const selValue = document.createElement('select'); colValue.appendChild(selValue);
+  const colUnit = document.createElement('div'); rowFields2.appendChild(colUnit);
+  const lblUnit = document.createElement('label'); lblUnit.textContent = 'Unit (optional)'; colUnit.appendChild(lblUnit);
+  const inpUnit = document.createElement('input'); inpUnit.type = 'text'; inpUnit.placeholder = 'people'; colUnit.appendChild(inpUnit);
+
+  const lblSource = document.createElement('label'); lblSource.textContent = 'Source (optional — provenance for this dataset)'; lblSource.style.marginTop = '8px'; mapWrap.appendChild(lblSource);
+  const inpSource = document.createElement('input'); inpSource.type = 'text'; inpSource.placeholder = 'MIC Statistics Bureau, 2023'; mapWrap.appendChild(inpSource);
+  const lblSourceUrl = document.createElement('label'); lblSourceUrl.textContent = 'Source URL (optional)'; mapWrap.appendChild(lblSourceUrl);
+  const inpSourceUrl = document.createElement('input'); inpSourceUrl.type = 'text'; inpSourceUrl.placeholder = 'https://…'; mapWrap.appendChild(inpSourceUrl);
+
+  const feedback = document.createElement('div'); feedback.style.marginTop = '8px'; wrap.appendChild(feedback);
+
+  const parseBtn = document.createElement('button'); parseBtn.type = 'button'; parseBtn.className = 'small'; parseBtn.style.marginTop = '8px'; parseBtn.textContent = 'Read columns';
+  parseBtn.addEventListener('click', () => {
+    const parsed = parseCSV(ta.value);
+    parsedHeaders = parsed.headers;
+    feedback.innerHTML = '';
+    if (!parsedHeaders.length) { feedback.innerHTML = '<div class="empty-note">Could not find a header row — paste CSV text above first.</div>'; mapWrap.style.display = 'none'; return; }
+    [selTime, selEntity, selValue].forEach(sel => {
+      sel.innerHTML = '';
+      parsedHeaders.forEach(h => { const opt = document.createElement('option'); opt.value = h; opt.textContent = h; sel.appendChild(opt); });
+    });
+    const guessed = guessFields(parsedHeaders);
+    selTime.value = guessed.time; selEntity.value = guessed.entity; selValue.value = guessed.value;
+    mapWrap.style.display = '';
+    feedback.innerHTML = `<div class="empty-note">${parsedHeaders.length} columns, ${parsed.rows.length} data rows found. Check the field mapping below, then add the source.</div>`;
+  });
+  wrap.appendChild(parseBtn);
+
+  const btnRow = document.createElement('div'); btnRow.className = 'row2'; btnRow.style.marginTop = '10px'; wrap.appendChild(btnRow);
+  const addOneBtn = document.createElement('button'); addOneBtn.type = 'button'; addOneBtn.className = 'primary'; addOneBtn.style.width = '100%'; addOneBtn.textContent = 'Add data source';
+  addOneBtn.addEventListener('click', () => {
+    if (!parsedHeaders.length) { feedback.innerHTML = '<div class="empty-note">Click "Read columns" first.</div>'; return; }
+    const result = addDataSourceFromForm({
+      name: inpName.value, csvText: ta.value,
+      timeField: selTime.value, entityField: selEntity.value, valueField: selValue.value,
+      unit: inpUnit.value, source: inpSource.value, sourceUrl: inpSourceUrl.value,
+    });
+    if (!result.ok) {
+      feedback.innerHTML = '<div class="empty-note">' + result.errors.map(e => '⚠ ' + e).join('<br>') + '</div>';
+      return;
+    }
+    renderDataSourceList();
+    wrap.style.display = 'none';
+    addBtn.style.display = '';
+    const warnMsg = result.warnings.length ? ` (${result.warnings.length} row${result.warnings.length === 1 ? '' : 's'} skipped — see console for details)` : '';
+    if (result.warnings.length) console.warn('Data source "' + (inpName.value || 'Untitled') + '" import warnings:\n' + result.warnings.join('\n'));
+    setStatus(`Data source added ✓${warnMsg}`);
+    // If a temporalLine/temporalStat layer is already selected, its "Data source" dropdown was
+    // rendered before this source existed — refresh the props panel so the new option shows up
+    // without the creator having to click away and back.
+    const active = canvas.getActiveObject();
+    if (active && active.data && (active.data.temporalLine || active.data.temporalStat)) selectProps(active);
+  });
+  btnRow.appendChild(addOneBtn);
+  const cancelBtn = document.createElement('button'); cancelBtn.type = 'button'; cancelBtn.className = 'ghost'; cancelBtn.style.width = '100%'; cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', () => { wrap.style.display = 'none'; addBtn.style.display = ''; });
+  btnRow.appendChild(cancelBtn);
+}
+document.getElementById('btnAddDataSource').addEventListener('click', () => {
+  renderDataSourceForm();
+  document.getElementById('dataSourceForm').style.display = '';
+  document.getElementById('btnAddDataSource').style.display = 'none';
+});
+renderDataSourceList();
 
 /* ---- LineView: a temporal line chart layer — first version deliberately minimal (axis-lite  */
 /* ---- frame, one line, a moving cursor, current value) per the "prove architecture, don't    */
@@ -1446,10 +1708,26 @@ function applyLineChartTimeline(obj, elapsed) {
   // visually distinguished, not silently presented as the same thing — full opacity + a solid
   // fill for an observed instant, a hollow/dimmer cursor while gliding between two real rows.
   rt.cursor.set({ left: x - offX, top: y - offY, fill: result.observed ? '#FFFFFF' : 'transparent', opacity: result.observed ? 1 : 0.7 }); rt.cursor.setCoords();
-  rt.valueLabel.set({ left: x + 10 - offX, top: y - 24 - offY, text: formatTemporalValue(result.value, cfg.unit), opacity: result.observed ? 1 : 0.75 });
+  rt.valueLabel.set({ left: x + 10 - offX, top: y - 24 - offY, text: formatTemporalValue(result.value, cfg.unit, { compact: cfg.compactNumbers, percentage: cfg.percentage }), opacity: result.observed ? 1 : 0.75 });
   rt.valueLabel.setCoords();
 }
-function formatTemporalValue(v, unit) {
+// Minimal number formatting, per the "don't build an arbitrary formatting engine" scoping —
+// two optional flags on top of the existing round-to-1-decimal default, never silently
+// changing UNIT mid-animation (compact/percentage are picked once, at layer-config time, not
+// derived per-frame from the value itself).
+function formatTemporalValue(v, unit, opts) {
+  opts = opts || {};
+  if (opts.percentage) {
+    const rounded = Math.abs(v - Math.round(v)) < 0.01 ? Math.round(v) : Math.round(v * 10) / 10;
+    return rounded + '%';
+  }
+  if (opts.compact && Math.abs(v) >= 1000) {
+    const tiers = [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
+    const tier = tiers.find(([n]) => Math.abs(v) >= n);
+    const scaled = v / tier[0];
+    const str = (Math.abs(scaled - Math.round(scaled)) < 0.01 ? Math.round(scaled) : Math.round(scaled * 10) / 10) + tier[1];
+    return str + (unit ? ' ' + unit : '');
+  }
   const rounded = Math.abs(v - Math.round(v)) < 0.01 ? Math.round(v) : Math.round(v * 10) / 10;
   return rounded + (unit ? ' ' + unit : '');
 }
@@ -1489,7 +1767,68 @@ function applyTemporalStatTimeline(obj, elapsed) {
   const dataTime = rt.src.videoTimeToDataTime(elapsed);
   const result = rt.src.valueAt(cfg.entity, dataTime);
   if (!result) return;
-  rt.valueText.set('text', formatTemporalValue(result.value, cfg.unit));
+  rt.valueText.set('text', formatTemporalValue(result.value, cfg.unit, { compact: cfg.compactNumbers, percentage: cfg.percentage }));
+}
+
+// ---- props-panel control manifests for temporalLine/temporalStat ------------------------
+// Same declarative pattern as MAP_EVENT_CONTROLS (see renderControlList above, which both
+// this and the map event editor share) — a plain field is a one-line manifest entry, not new
+// UI code. `sourceId`/`entity` are the two genuinely dynamic ones (their choices depend on the
+// current data source registry / the chosen source's own entities), which is what the
+// `select` control type's `optionsFor(cfg)` escape hatch (added alongside this) is for.
+function onSetTemporalSource(cfg, v) {
+  cfg.sourceId = v;
+  const src = temporalSourceFor(cfg);
+  const entities = src ? src.entities() : [];
+  if (entities.length && !entities.includes(cfg.entity)) cfg.entity = entities[0];
+}
+const TEMPORAL_SOURCE_ENTITY_CONTROLS = [
+  { key: 'sourceId', label: 'Data source', type: 'select', optionsFor: () => allTemporalSources(), onSet: onSetTemporalSource },
+  { key: 'entity', label: 'Entity', type: 'select', optionsFor: (cfg) => { const src = temporalSourceFor(cfg); return src ? src.entities().map(e => ({ value: e, label: e })) : []; } },
+];
+const TEMPORAL_LINE_CONTROLS = [
+  ...TEMPORAL_SOURCE_ENTITY_CONTROLS,
+  { key: 'color', label: 'Line color', type: 'color' },
+  { key: 'unit', label: 'Unit (optional)', type: 'text', placeholder: 'people', pairWithNext: true },
+  { key: 'compactNumbers', label: 'Abbreviate (12.4K instead of 12400)', type: 'checkbox', default: false },
+  { key: 'source', label: 'Source caption (optional — shown small under the chart)', type: 'text', placeholder: 'MIC Statistics Bureau, 2023' },
+  { key: 'sourceUrl', label: 'Source URL (optional — editor reference only, never shown in the video)', type: 'text', placeholder: 'https://…' },
+  { key: 'videoStart', label: 'Data range start (sec)', type: 'time', timeKind: 'point', pairWithNext: true },
+  { key: 'videoEnd', label: 'Data range end (sec)', type: 'time', timeKind: 'point' },
+];
+const TEMPORAL_STAT_CONTROLS = [
+  ...TEMPORAL_SOURCE_ENTITY_CONTROLS,
+  { key: 'label', label: 'Label (optional — defaults to the entity name)', type: 'text', placeholder: 'Population' },
+  { key: 'unit', label: 'Unit (optional)', type: 'text', placeholder: 'people', pairWithNext: true },
+  { key: 'compactNumbers', label: 'Abbreviate (12.4K instead of 12400)', type: 'checkbox', default: false },
+  { key: 'source', label: 'Source caption (optional — shown small on the card)', type: 'text', placeholder: 'MIC Statistics Bureau, 2023' },
+  { key: 'sourceUrl', label: 'Source URL (optional — editor reference only, never shown in the video)', type: 'text', placeholder: 'https://…' },
+  { key: 'videoStart', label: 'Data range start (sec)', type: 'time', timeKind: 'point', pairWithNext: true },
+  { key: 'videoEnd', label: 'Data range end (sec)', type: 'time', timeKind: 'point' },
+];
+// "Data range" (videoStart/videoEnd, above) is DATA TIME's own window — the two video moments
+// across which the full dataset plays. It's a deliberately separate concept from "Animation
+// Duration" (the generic delay/duration entrance-fade controls every layer already gets,
+// rendered further down in selectProps) — a creator can make the chart's data sweep take 4
+// seconds while the chart itself fades in over the first 0.5 of those, and the two number
+// pairs are shown in visually separate places rather than merged into one, to keep that
+// distinction legible rather than implicit.
+function renderTemporalDataRangeNote(body) {
+  const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop = '8px';
+  note.textContent = 'Data range start/end are video moments — when this layer starts and finishes sweeping through its data. That is separate from the entrance animation (further down), which is just this layer\'s own fade/pop-in.';
+  body.appendChild(note);
+}
+function renderTemporalLinePropsPanel(body, obj) {
+  const cfg = obj.data.temporalLine;
+  function commit() { rebuildLineChart(obj, cfg); }
+  renderControlList(body, TEMPORAL_LINE_CONTROLS, cfg, commit, null);
+  renderTemporalDataRangeNote(body);
+}
+function renderTemporalStatPropsPanel(body, obj) {
+  const cfg = obj.data.temporalStat;
+  function commit() { rebuildTemporalStat(obj, cfg); }
+  renderControlList(body, TEMPORAL_STAT_CONTROLS, cfg, commit, null);
+  renderTemporalDataRangeNote(body);
 }
 /* ---- Org/Family Tree: parses a plain indented-text outline (2 spaces = one level     ---- */
 /* ---- deeper) into a tree, lays it out with each parent centered above its children    ---- */
@@ -2036,13 +2375,22 @@ function specToObject(spec) {
     mapCfg._runtime = built.runtime;
     mapCfg.baseTransform = { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY };
   } else if (spec.kind === 'temporalLine') {
-    var temporalLineCfg = { sourceId: spec.sourceId, entity: spec.entity, color: spec.color, videoStart: spec.videoStart || 0, videoEnd: spec.videoEnd || 4000, width: spec.width, height: spec.height, unit: spec.unit };
+    // No sourceId given (the "+ Temporal Line" quick-add button) -> default to the first
+    // available source/entity so the layer renders something sensible immediately, rather
+    // than a blank chart the creator has to configure before seeing anything at all.
+    const lineDefaultSrc = spec.sourceId ? null : allTemporalSources()[0];
+    const lineSourceId = spec.sourceId || (lineDefaultSrc && lineDefaultSrc.value) || 'fixtureIndex';
+    const lineDefaultEntity = spec.entity || (temporalSourceFor({ sourceId: lineSourceId, videoStart: 0, videoEnd: 1000 }) || { entities: () => [] }).entities()[0];
+    var temporalLineCfg = { sourceId: lineSourceId, entity: lineDefaultEntity, color: spec.color, videoStart: spec.videoStart || 0, videoEnd: spec.videoEnd || 4000, width: spec.width, height: spec.height, unit: spec.unit, source: spec.source, sourceUrl: spec.sourceUrl, compactNumbers: !!spec.compactNumbers, percentage: !!spec.percentage };
     const builtLine = buildLineChartGroup(temporalLineCfg);
     obj = builtLine.group;
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
     temporalLineCfg._runtime = builtLine.runtime;
   } else if (spec.kind === 'temporalStat') {
-    var temporalStatCfg = { sourceId: spec.sourceId, entity: spec.entity, label: spec.label, unit: spec.unit, source: spec.source, videoStart: spec.videoStart || 0, videoEnd: spec.videoEnd || 4000, left: 0, top: 0 };
+    const statDefaultSrc = spec.sourceId ? null : allTemporalSources()[0];
+    const statSourceId = spec.sourceId || (statDefaultSrc && statDefaultSrc.value) || 'fixtureIndex';
+    const statDefaultEntity = spec.entity || (temporalSourceFor({ sourceId: statSourceId, videoStart: 0, videoEnd: 1000 }) || { entities: () => [] }).entities()[0];
+    var temporalStatCfg = { sourceId: statSourceId, entity: statDefaultEntity, label: spec.label, unit: spec.unit, source: spec.source, sourceUrl: spec.sourceUrl, compactNumbers: !!spec.compactNumbers, percentage: !!spec.percentage, videoStart: spec.videoStart || 0, videoEnd: spec.videoEnd || 4000, left: 0, top: 0 };
     const builtStat = buildTemporalStatGroup(temporalStatCfg);
     obj = builtStat.group;
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
@@ -2396,6 +2744,10 @@ function selectProps(obj) {
     const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
     note.textContent = 'This is one resizable layer, not individual boxes — drag/resize it like any other layer. Edit the outline above and it regenerates in place.';
     body.appendChild(note);
+  } else if (obj.data.temporalLine) {
+    renderTemporalLinePropsPanel(body, obj);
+  } else if (obj.data.temporalStat) {
+    renderTemporalStatPropsPanel(body, obj);
   } else if (obj.type === 'group' && obj.data.userGroup) {
     const note = document.createElement('div'); note.className = 'empty-note';
     note.textContent = `A group of ${obj.getObjects().length} layers, locked together — move, resize, or align it like one layer. Ungroup to edit or reposition a piece on its own again.`;
@@ -2498,6 +2850,14 @@ document.getElementById('addMap').addEventListener('click', () => {
   const obj = specToObject(M({ name:'Map', left:W/2, top:H/2, originX:'center', originY:'center', scope:'world', anim:{type:'fade',delay:0,duration:600}, events:[
     { type:'highlight', id:newMapEventId(), region:'Japan', color:COLORS.tealLight, start:300, duration:700, dim:true },
   ] }));
+  canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
+});
+document.getElementById('addTemporalLine').addEventListener('click', () => {
+  const obj = specToObject(LN({ name:'Temporal line', left:W/2 - 240, top:H/2 - 100, originX:'left', originY:'top', width:480, height:200, anim:{type:'fade',delay:0,duration:600} }));
+  canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
+});
+document.getElementById('addTemporalStat').addEventListener('click', () => {
+  const obj = specToObject(TS({ name:'Temporal stat', left:W/2 - 104, top:H/2 - 40, originX:'left', originY:'top', anim:{type:'fade',delay:0,duration:600} }));
   canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
 });
 
@@ -2667,7 +3027,7 @@ renderCustomFontList();
 /* ============ PROJECT SAVE / LOAD ============ */
 document.getElementById('btnSaveProject').addEventListener('click', () => {
   const objs = canvas.getObjects().filter(o => o !== bgMediaObj).map(o => o.toObject(['data','name']));
-  const proj = { version:2, fontPreset: currentFontPreset, bgColor: canvas.backgroundColor, hold: parseFloat(document.getElementById('fHold').value)||2, objects: objs, customFonts: customFonts };
+  const proj = { version:2, fontPreset: currentFontPreset, bgColor: canvas.backgroundColor, hold: parseFloat(document.getElementById('fHold').value)||2, objects: objs, customFonts: customFonts, dataSources: dataSources };
   const blob = new Blob([JSON.stringify(proj, null, 2)], { type:'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href = url; a.download = 'belocal_scene.json'; document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -2684,6 +3044,8 @@ document.getElementById('projectFile').addEventListener('change', (e) => {
     canvas.backgroundColor = proj.bgColor || '#1F3864'; renderBgColorSwatches();
     document.getElementById('fHold').value = proj.hold || 2;
     customFonts = [];
+    dataSources = proj.dataSources || {};
+    renderDataSourceList();
     const fontLoads = (proj.customFonts || []).map(f =>
       registerCustomFont(f.family, f.dataUrl).then(() => customFonts.push(f)).catch(() => {})
     );
@@ -2691,6 +3053,24 @@ document.getElementById('projectFile').addEventListener('change', (e) => {
       renderCustomFontList();
       fabric.util.enlivenObjects(proj.objects).then((objs) => {
         objs.forEach(o => canvas.add(o));
+        // A JSON round-trip necessarily drops every "regenerate-in-place" layer's live,
+        // non-serializable _runtime (Fabric object refs, JS Map instances like a map's
+        // regionPaths, the TemporalDataSource's own functions) — Map/Set instances and
+        // functions don't survive JSON.stringify at all, so a reloaded layer's _runtime is
+        // either empty or a plain object masquerading as one. Every field each of these is
+        // BUILT FROM (scope/events, total/highlight, sourceId/entity/videoStart/...) DID
+        // survive the round trip intact, so rebuilding each one in place from that surviving
+        // config reproduces the exact same runtime state, rather than leaving a scrub/Preview
+        // crash waiting for the first frame that touches a reloaded layer's _runtime.
+        objs.slice().forEach(o => {
+          if (o.data && o.data.map) rebuildMap(o, {});
+          if (o.data && o.data.dotgrid) rebuildDotGrid(o, {});
+          if (o.data && o.data.pin) rebuildPin(o, {});
+          if (o.data && o.data.orgchart) rebuildOrgChart(o, {});
+          if (o.data && o.data.temporalLine) rebuildLineChart(o, {});
+          if (o.data && o.data.temporalStat) rebuildTemporalStat(o, {});
+        });
+        canvas.discardActiveObject(); selectProps(null);
         canvas.requestRenderAll(); refreshLayerList(); updateScrubRange();
         setStatus('Project loaded ✓');
       });
@@ -2834,7 +3214,25 @@ function applyFrame(elapsed) {
     if (o.data.temporalLine) applyLineChartTimeline(o, elapsed);
     if (o.data.temporalStat) applyTemporalStatTimeline(o, elapsed);
   });
+  updateScrubDataTimeReadout(elapsed);
   canvas.requestRenderAll();
+}
+// Video Time (the scrubber's own seconds readout, always shown) vs Data Time (this reads out
+// alongside it, but only while scrubbing AND a temporalLine/temporalStat layer is selected) —
+// two distinct clocks a creator can otherwise only infer indirectly. `scrubReferenceObj` is
+// captured at the START of a scrub rather than read live via canvas.getActiveObject(), because
+// beginScrub()'s setInteractive(false) discards the canvas selection for the duration of the
+// drag (see setInteractive) — without capturing it first there would be no selection left to
+// read from by the time a frame actually renders.
+let scrubReferenceObj = null;
+function updateScrubDataTimeReadout(elapsed) {
+  const el = document.getElementById('scrubDataTime');
+  if (!el) return;
+  const cfg = scrubbing && scrubReferenceObj && scrubReferenceObj.data && (scrubReferenceObj.data.temporalLine || scrubReferenceObj.data.temporalStat);
+  const src = cfg && temporalSourceFor(cfg);
+  if (!src) { el.textContent = ''; return; }
+  const dt = src.videoTimeToDataTime(elapsed);
+  el.textContent = '· Data time: ' + (Number.isInteger(dt) ? dt : dt.toFixed(1));
 }
 
 /* ============ TIMELINE SCRUBBER (minor edits / fine-tuning without full playback) ============ */
@@ -2849,14 +3247,17 @@ function updateScrubRange() {
 function beginScrub() {
   if (mode !== 'edit' || scrubbing) return;
   scrubbing = true;
+  scrubReferenceObj = canvas.getActiveObject();
   captureBaseState();
   setInteractive(false);
 }
 function endScrub() {
   if (!scrubbing) return;
   scrubbing = false;
+  scrubReferenceObj = null;
   restoreBaseState();
   setInteractive(true);
+  const el = document.getElementById('scrubDataTime'); if (el) el.textContent = '';
 }
 
 function setInteractive(on) {

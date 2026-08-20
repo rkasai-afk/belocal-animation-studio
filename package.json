@@ -5,7 +5,7 @@
   "description": "BeLocal Japan Explainer Series — free-form B-roll/animation editor. Single self-contained HTML file, no server, no framework.",
   "scripts": {
     "build": "node build.js",
-    "test": "npm run build && node tests/test_v2.js && node tests/test_v3.js && node tests/test_v4.js && node tests/test_v5.js && node tests/test_v6.js && node tests/test_v7.js && node tests/test_v8.js && node tests/test_v9.js && node tests/test_v10.js && node tests/test_v11.js && node tests/test_v12.js && node tests/test_v13.js && node tests/test_v14.js && node tests/test_v15.js && node tests/test_subtitles.js && node tests/test_production.js"
+    "test": "npm run build && node tests/test_v2.js && node tests/test_v3.js && node tests/test_v4.js && node tests/test_v5.js && node tests/test_v6.js && node tests/test_v7.js && node tests/test_v8.js && node tests/test_v9.js && node tests/test_v10.js && node tests/test_v11.js && node tests/test_v12.js && node tests/test_v13.js && node tests/test_v14.js && node tests/test_v15.js && node tests/test_v16.js && node tests/test_subtitles.js && node tests/test_production.js"
   },
   "devDependencies": {
     "playwright": "^1.47.0"
