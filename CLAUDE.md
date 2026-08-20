@@ -63,6 +63,10 @@ src/fonts_embed.css           @font-face declarations, base64 woff2 (Space Grote
                                Neue, Inter, Work Sans, Playfair Display, Source Sans 3)
 src/fabric.min.js             Fabric.js v7.4.0 UMD build, vendored (not npm-installed at
                                runtime — it's spliced directly into index.html)
+src/map_data.js                Vendored geographic boundary data (world countries + Japan
+                               prefectures) for the Map Graphic layer — see that file's own
+                               header comment for sources/licenses and the "Map Graphic"
+                               architecture note below for why this needs no network access.
 src/app.js                    All application logic — the file you'll edit almost every time
 build.js                      Assembles the above into index.html at repo root
 index.html                    BUILD OUTPUT. This is what GitHub Pages serves. Don't hand-edit.
@@ -108,6 +112,11 @@ tests/test_v13.js             Playwright regression: the Vertical-only safe-zone
                                zone" button re-nudging a layer dragged back in, and a recorded
                                WebM's decoded pixels confirming the guide is never baked into
                                output
+tests/test_v14.js             Playwright regression: Map Graphic layer (quick-add default,
+                               scope switching, highlight add/remove via dropdown+swatch,
+                               route arrow between two regions, the three Map starter
+                               templates checked for overflow across all 3 aspect ratios like
+                               test_v5's pattern, save/load round-trip)
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -137,7 +146,7 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
 
 1. Edit `src/app.js` (and `src/studio_v2_template.html` if the UI needs new elements).
 2. `npm run build` — regenerates `index.html`.
-3. `npm test` — runs build + all fourteen Playwright suites headless. Every suite must end
+3. `npm test` — runs build + all sixteen Playwright suites headless. Every suite must end
    with `HAD ERROR: false` (no console/page errors). Read the printed assertions, not just
    the exit code — several tests print `OK`/`FAIL` inline rather than throwing.
 4. For anything visual (new template, layout change, animation timing), also actually look
@@ -256,6 +265,21 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   object's absolute `getBoundingRect(true, true)` and translating via `left`/`top` deltas —
   this is safe under rotation/scale because translating an object's origin point shifts its
   whole rendered bounding box by the same delta, regardless of its own transform.
+- **Map Graphic** (`buildMapGroup()`/`rebuildMap()`, `src/map_data.js`) renders illustrated
+  country or Japan-prefecture outlines from vendored SVG path data — real geographic
+  boundaries, but static vector data rather than live tiles, so (unlike the Map/Location Pin
+  above) it needs zero network requests and still fits this project's single-file
+  architecture. Regions are matched by exact name (case-insensitive) against
+  `WORLD_MAP_DATA.countries`/`JAPAN_MAP_DATA.prefectures` — the props panel only ever offers
+  names from a `<select>`, so a typo can't silently fail to highlight anything. A region's
+  centroid for the optional route arrow is read from its `fabric.Path`'s own bounding box
+  (`path.left + path.width/2`, before grouping) — this works because every path in one scope
+  shares one coordinate system, and `fabric.Group`'s constructor is what normalizes
+  everything to be relative to the group's own bounding box afterward, the same mechanic
+  Dot-Grid's absolute-pixel-then-group approach already relies on. Follows the exact
+  regenerate-in-place pattern as Dot-Grid/Pin/Org-Chart above — switching scope resets
+  highlights/route (prefecture and country names don't overlap), and dragging/resizing the
+  whole group works like any other layer via `scaleX`/`scaleY`.
 - **Custom font import** registers via the `FontFace` API (`registerCustomFont`) and is
   persisted into saved `.json` projects as base64 data URLs (`customFonts` array) so a
   reloaded project re-registers the same fonts before enlivening objects.
@@ -346,12 +370,15 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   buttons (`app.js`, `refreshLayerList()`) but no full undo history and no pointer-drag
   reordering. Both are real, independent UI investments (a command/state-snapshot stack;
   pointer/drop-index handling) rather than something to bolt on quickly.
-- A geographic map/callout layer exists now (Map/Location Pin — a manual overlay marker over
-  a background map image), but genuine mapping (tiles, geocoding) is intentionally out of
-  scope — it would need external requests, which the single-file/no-network architecture
-  rules out categorically, not just as a matter of remaining effort.
+- Two geographic layer types now exist, deliberately different in kind: Map/Location Pin (a
+  manual overlay marker over a background map image) and Map Graphic (illustrated country/
+  prefecture outlines with fill highlights and route arrows — see "Map Graphic" below). Live,
+  navigable, tile-based mapping (pan/zoom street or satellite imagery, real geocoding) is
+  still intentionally out of scope — that genuinely needs external requests at runtime, which
+  the single-file/no-network architecture rules out categorically. Map Graphic doesn't need
+  that, because it's vendored static vector boundary data, not live tiles.
 - **Documentary Studio** (`production/`) has its own deferred list — AI-assisted asset
-  tagging/search, Evidence Visualizer, Map Builder, Data Story Engine, Voiceover/Radio Cut
+  tagging/search, Evidence Visualizer, Data Story Engine, Voiceover/Radio Cut
   assembly, and Final QC cross-checking — all intentionally stubbed or left as future hooks
   rather than built fragile. See `production/README.md` "Deferred / future modules" for what
   each one needs before it's real. Production-document import (`.docx`/`.pdf`) *is* built —

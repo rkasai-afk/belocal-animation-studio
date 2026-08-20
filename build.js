@@ -24,12 +24,15 @@ const SRC = path.join(ROOT, 'src');
 const template = fs.readFileSync(path.join(SRC, 'studio_v2_template.html'), 'utf8');
 const fonts = fs.readFileSync(path.join(SRC, 'fonts_embed.css'), 'utf8');
 const fabricJs = fs.readFileSync(path.join(SRC, 'fabric.min.js'), 'utf8');
+const mapData = fs.readFileSync(path.join(SRC, 'map_data.js'), 'utf8');
 const appJs = fs.readFileSync(path.join(SRC, 'app.js'), 'utf8');
 
 let html = template;
 html = html.replace('/*FONT_FACES_PLACEHOLDER*/', () => fonts);
 html = html.replace('/*FABRIC_JS_PLACEHOLDER*/', () => fabricJs);
-html = html.replace('/*APP_JS_PLACEHOLDER*/', () => appJs);
+// map_data.js is plain data (no fabric-style $&/$`/$' footguns) but stays consistent with
+// the function-replacer rule below regardless, since app.js is concatenated after it here.
+html = html.replace('/*APP_JS_PLACEHOLDER*/', () => `${mapData}\n${appJs}`);
 
 const outPath = path.join(ROOT, 'index.html');
 fs.writeFileSync(outPath, html);

@@ -241,6 +241,7 @@ function C(opts) { return Object.assign({ kind:'circle' }, opts); }
 function D(opts) { return Object.assign({ kind:'dotgrid' }, opts); }
 function P(opts) { return Object.assign({ kind:'pin' }, opts); }
 function O(opts) { return Object.assign({ kind:'orgchart' }, opts); }
+function M(opts) { return Object.assign({ kind:'map' }, opts); }
 
 /* ---- Dot-Grid Pictogram: built as one resizable "generated group" layer, not      ---- */
 /* ---- hundreds of individually-draggable dots. Total/highlight are edited via      ---- */
@@ -315,6 +316,67 @@ function rebuildPin(obj, patch) {
   newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
   newObj.set('name', obj.get('name'));
   newObj.data = { role:null, isCounter:false, anim, pin: cfg };
+  canvas.remove(obj);
+  canvas.insertAt(idx, newObj);
+  canvas.setActiveObject(newObj);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(newObj);
+  updateScrubRange();
+}
+
+/* ---- Map Graphic: illustrated country/prefecture outlines with optional fill          ---- */
+/* ---- highlights and a curved route arrow between two regions — unlike Map/Location    ---- */
+/* ---- Pin above, this IS real geographic data, but vendored as static vector boundary   ---- */
+/* ---- paths (WORLD_MAP_DATA/JAPAN_MAP_DATA, src/map_data.js) rather than live tiles, so  ---- */
+/* ---- it needs zero network requests at runtime — see that file's header comment for    ---- */
+/* ---- the data sources. One regenerable group, same pattern as Dot-Grid/Pin/Org-Chart.   ---- */
+function mapRegionsFor(scope) {
+  return scope === 'japan' ? JAPAN_MAP_DATA.prefectures : WORLD_MAP_DATA.countries;
+}
+function buildRouteArrowShapes(from, to, color) {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const bow = Math.min(dist * 0.28, 90);
+  const mx = (from.x + to.x) / 2 - (dy / dist) * bow;
+  const my = (from.y + to.y) / 2 + (dx / dist) * bow;
+  const d = `M ${from.x} ${from.y} Q ${mx} ${my} ${to.x} ${to.y}`;
+  const line = new fabric.Path(d, { fill:'', stroke:color, strokeWidth:5, strokeLineCap:'round', selectable:false, evented:false });
+  const angle = Math.atan2(to.y - my, to.x - mx) * 180 / Math.PI;
+  const head = new fabric.Triangle({ left:to.x, top:to.y, width:20, height:22, fill:color, originX:'center', originY:'center', angle:angle + 90, selectable:false, evented:false });
+  const dotFrom = new fabric.Circle({ left:from.x, top:from.y, radius:7, fill:color, stroke:'#FFFFFF', strokeWidth:1.5, originX:'center', originY:'center', selectable:false, evented:false });
+  const dotTo = new fabric.Circle({ left:to.x, top:to.y, radius:7, fill:color, stroke:'#FFFFFF', strokeWidth:1.5, originX:'center', originY:'center', selectable:false, evented:false });
+  return [line, dotFrom, dotTo, head];
+}
+function buildMapGroup(scope, highlights, routeFrom, routeTo, routeColor) {
+  scope = scope === 'japan' ? 'japan' : 'world';
+  const regions = mapRegionsFor(scope);
+  const highlightByName = new Map((highlights || []).map(h => [h.name.toLowerCase(), h.color]));
+  const shapes = [];
+  const centroids = new Map();
+  regions.forEach(r => {
+    const key = r.name.toLowerCase();
+    const path = new fabric.Path(r.path, {
+      fill: highlightByName.get(key) || 'rgba(255,255,255,0.14)',
+      stroke: 'rgba(255,255,255,0.45)', strokeWidth: scope === 'japan' ? 1.2 : 0.7,
+      strokeLineJoin: 'round', selectable:false, evented:false,
+    });
+    shapes.push(path);
+    centroids.set(key, { x: path.left + path.width / 2, y: path.top + path.height / 2 });
+  });
+  const from = routeFrom && centroids.get(routeFrom.toLowerCase());
+  const to = routeTo && centroids.get(routeTo.toLowerCase());
+  if (from && to) shapes.push(...buildRouteArrowShapes(from, to, routeColor || COLORS.amberLight));
+  return new fabric.Group(shapes, { subTargetCheck:false });
+}
+function rebuildMap(obj, patch) {
+  const cfg = Object.assign({}, obj.data.map, patch);
+  const idx = canvas.getObjects().indexOf(obj);
+  const anim = obj.data.anim;
+  const newObj = buildMapGroup(cfg.scope, cfg.highlights, cfg.routeFrom, cfg.routeTo, cfg.routeColor);
+  newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
+  newObj.set('name', obj.get('name'));
+  newObj.data = { role:null, isCounter:false, anim, map: cfg };
   canvas.remove(obj);
   canvas.insertAt(idx, newObj);
   canvas.setActiveObject(newObj);
@@ -728,6 +790,45 @@ const TEMPLATES = {
       return out;
     },
   },
+  mapCountry: {
+    label: 'Map: Highlight Country',
+    category: 'Maps',
+    layers: () => {
+      const cx = W/2, rel = W/1920;
+      const mapScale = Math.min(W*0.8/960, H*0.55/500);
+      return [
+        T("WHERE THIS FITS ON THE MAP", { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        M({ name:'World map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'world', highlights:[{name:'Japan',color:COLORS.tealLight}], routeFrom:'', routeTo:'', routeColor:COLORS.amberLight, scale:mapScale, anim:{type:'fade',delay:600,duration:900} }),
+        T('Japan', { name:'Caption', role:'display', fontWeight:700, fontSize:38, fill:'#FFFFFF', left:cx, top:H*0.9, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1400,duration:500} }),
+      ];
+    },
+  },
+  mapJapanRegion: {
+    label: 'Map: Japan Region Highlight',
+    category: 'Maps',
+    layers: () => {
+      const cx = W/2, rel = W/1920;
+      const mapScale = Math.min(W*0.75/600, H*0.6/650);
+      return [
+        T('A CLOSER LOOK', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        M({ name:'Japan map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'japan', highlights:[{name:'Kanagawa',color:COLORS.amberLight},{name:'Tōkyō',color:'rgba(255,255,255,0.3)'}], routeFrom:'', routeTo:'', routeColor:COLORS.amberLight, scale:mapScale, anim:{type:'fade',delay:600,duration:900} }),
+        T('Kanagawa Prefecture', { name:'Caption', role:'display', fontWeight:700, fontSize:38, fill:'#FFFFFF', left:cx, top:H*0.92, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1400,duration:500} }),
+      ];
+    },
+  },
+  mapRoute: {
+    label: 'Map: Route Between Two Places',
+    category: 'Maps',
+    layers: () => {
+      const cx = W/2, rel = W/1920;
+      const mapScale = Math.min(W*0.75/600, H*0.6/650);
+      return [
+        T('TWO CITIES, ONE COMPARISON', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        M({ name:'Japan route map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'japan', highlights:[{name:'Tōkyō',color:COLORS.tealLight},{name:'Ōsaka',color:COLORS.amberLight}], routeFrom:'Tōkyō', routeTo:'Ōsaka', routeColor:'#FFFFFF', scale:mapScale, anim:{type:'fade',delay:600,duration:900} }),
+        T('Tokyo vs Osaka', { name:'Caption', role:'display', fontWeight:700, fontSize:38, fill:'#FFFFFF', left:cx, top:H*0.92, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1400,duration:500} }),
+      ];
+    },
+  },
 };
 
 /* ============ LAYER CREATION FROM SPEC ============ */
@@ -763,6 +864,9 @@ function specToObject(spec) {
   } else if (spec.kind === 'orgchart') {
     obj = buildOrgChartGroup(spec.text, spec.color);
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
+  } else if (spec.kind === 'map') {
+    obj = buildMapGroup(spec.scope, spec.highlights, spec.routeFrom, spec.routeTo, spec.routeColor);
+    obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top', scaleX: spec.scale || 1, scaleY: spec.scale || 1 });
   }
   obj.set('name', spec.name || spec.kind);
   obj.data = {
@@ -778,6 +882,13 @@ function specToObject(spec) {
   }
   if (spec.kind === 'orgchart') {
     obj.data.orgchart = { text: spec.text || '', color: spec.color || COLORS.tealLight };
+  }
+  if (spec.kind === 'map') {
+    obj.data.map = {
+      scope: spec.scope === 'japan' ? 'japan' : 'world',
+      highlights: spec.highlights || [],
+      routeFrom: spec.routeFrom || '', routeTo: spec.routeTo || '', routeColor: spec.routeColor || COLORS.amberLight,
+    };
   }
   return obj;
 }
@@ -813,7 +924,7 @@ function refreshLayerList() {
   objs.forEach((o, i) => {
     const row = document.createElement('div');
     row.className = 'layer-row' + (canvas.getActiveObject() === o ? ' active' : '');
-    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : (o.data && o.data.pin) ? 'PIN' : (o.data && o.data.orgchart) ? 'TREE' : (o.data && o.data.userGroup) ? 'GROUP' : o.type.toUpperCase();
+    const typeLabel = o.type === 'textbox' ? 'TEXT' : o.type === 'rect' ? 'RECT' : o.type === 'circle' ? 'CIRC' : (o.data && o.data.dotgrid) ? 'DOTS' : (o.data && o.data.pin) ? 'PIN' : (o.data && o.data.orgchart) ? 'TREE' : (o.data && o.data.map) ? 'MAP' : (o.data && o.data.userGroup) ? 'GROUP' : o.type.toUpperCase();
     row.innerHTML = `<span class="ltype">${typeLabel}</span><span class="lname">${o.get('name') || o.type}</span>
       <button class="layer-order-btn" data-dir="up" title="Bring forward"${i === objs.length-1 ? ' disabled' : ''}>&#9650;</button>
       <button class="layer-order-btn" data-dir="down" title="Send backward"${i === 0 ? ' disabled' : ''}>&#9660;</button>`;
@@ -1080,6 +1191,75 @@ function selectProps(obj) {
     const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop='8px';
     note.textContent = 'A location marker for pointing at a spot on a map image or photo — drop your map in as background media, then drag this into place.';
     body.appendChild(note);
+  } else if (obj.data.map) {
+    const mp = obj.data.map;
+    const lblSc = document.createElement('label'); lblSc.textContent = 'Map'; body.appendChild(lblSc);
+    const scRow = document.createElement('div'); scRow.className = 'row2'; body.appendChild(scRow);
+    [{v:'world',label:'World'},{v:'japan',label:'Japan prefectures'}].forEach(s => {
+      const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
+      b.className = 'small' + (mp.scope === s.v ? ' primary' : ' ghost');
+      b.textContent = s.label;
+      b.addEventListener('click', () => { if (mp.scope !== s.v) rebuildMap(obj, { scope: s.v, highlights: [], routeFrom: '', routeTo: '' }); });
+      scRow.appendChild(b);
+    });
+
+    const regionNames = mapRegionsFor(mp.scope).map(r => r.name).sort();
+
+    const lblAdd = document.createElement('label'); lblAdd.textContent = 'Highlight a region — pick it, then click a color'; body.appendChild(lblAdd);
+    const selAdd = document.createElement('select'); regionNames.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selAdd.appendChild(o); }); body.appendChild(selAdd);
+    const swAdd = document.createElement('div'); swAdd.className = 'swatches'; swAdd.style.marginTop = '6px'; body.appendChild(swAdd);
+    SWATCH_OPTIONS.forEach(o => {
+      const s = document.createElement('div'); s.className = 'swatch';
+      s.style.background = o.val; s.title = `Highlight ${selAdd.value || ''} in ${o.name}`;
+      s.addEventListener('click', () => {
+        const name = selAdd.value; if (!name) return;
+        const next = mp.highlights.filter(h => h.name.toLowerCase() !== name.toLowerCase());
+        next.push({ name, color: o.val });
+        rebuildMap(obj, { highlights: next });
+      });
+      swAdd.appendChild(s);
+    });
+
+    if (mp.highlights.length) {
+      const chipsWrap = document.createElement('div'); chipsWrap.style.marginTop = '8px'; body.appendChild(chipsWrap);
+      mp.highlights.forEach(h => {
+        const chip = document.createElement('span'); chip.className = 'asset-chip';
+        chip.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${h.color};"></span> ${h.name} `;
+        const rm = document.createElement('button'); rm.type = 'button'; rm.textContent = '✕'; rm.title = 'Remove highlight';
+        rm.addEventListener('click', () => rebuildMap(obj, { highlights: mp.highlights.filter(x => x !== h) }));
+        chip.appendChild(rm);
+        chipsWrap.appendChild(chip);
+      });
+    }
+
+    const div2 = document.createElement('div'); div2.className = 'divider'; body.appendChild(div2);
+    const lblRoute = document.createElement('label'); lblRoute.textContent = 'Route arrow between two regions (optional)'; body.appendChild(lblRoute);
+    const routeRow = document.createElement('div'); routeRow.className = 'row2'; body.appendChild(routeRow);
+    const selFrom = document.createElement('select'); const selTo = document.createElement('select');
+    [selFrom, selTo].forEach(sel => {
+      const none = document.createElement('option'); none.value = ''; none.textContent = '— none —'; sel.appendChild(none);
+      regionNames.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+    });
+    selFrom.value = mp.routeFrom; selTo.value = mp.routeTo;
+    selFrom.addEventListener('change', () => rebuildMap(obj, { routeFrom: selFrom.value }));
+    selTo.addEventListener('change', () => rebuildMap(obj, { routeTo: selTo.value }));
+    const fromWrap = document.createElement('div'); const fromLbl = document.createElement('label'); fromLbl.textContent = 'From'; fromLbl.style.fontSize='11px'; fromWrap.appendChild(fromLbl); fromWrap.appendChild(selFrom); routeRow.appendChild(fromWrap);
+    const toWrap = document.createElement('div'); const toLbl = document.createElement('label'); toLbl.textContent = 'To'; toLbl.style.fontSize='11px'; toWrap.appendChild(toLbl); toWrap.appendChild(selTo); routeRow.appendChild(toWrap);
+
+    const lblRc = document.createElement('label'); lblRc.textContent = 'Route color'; body.appendChild(lblRc);
+    const swRc = document.createElement('div'); swRc.className = 'swatches'; body.appendChild(swRc);
+    SWATCH_OPTIONS.forEach(o => {
+      const s = document.createElement('div'); s.className = 'swatch' + (mp.routeColor === o.val ? ' active' : '');
+      s.style.background = o.val; s.title = o.name;
+      s.addEventListener('click', () => rebuildMap(obj, { routeColor: o.val }));
+      swRc.appendChild(s);
+    });
+
+    const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop = '8px';
+    note.textContent = mp.scope === 'japan'
+      ? 'Region-level only (all 47 prefectures) — for a specific city like Kamakura, use the Map/Location Pin marker over a background map image instead.'
+      : 'Country-level only — switch to Japan prefectures for regional detail within Japan.';
+    body.appendChild(note);
   } else if (obj.data.orgchart) {
     const oc = obj.data.orgchart;
     const lblT = document.createElement('label'); lblT.textContent = 'Names, one per line'; body.appendChild(lblT);
@@ -1197,6 +1377,10 @@ document.getElementById('addPin').addEventListener('click', () => {
 document.getElementById('addOrgChart').addEventListener('click', () => {
   const sample = 'Emperor Meiji\n  Emperor Taisho\n    Emperor Showa\n      Emperor Akihito\n        Emperor Naruhito';
   const obj = specToObject(O({ name:'Family tree', left:W/2, top:H/2, originX:'center', originY:'center', text:sample, color:COLORS.tealLight, anim:{type:'fade',delay:0,duration:500} }));
+  canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
+});
+document.getElementById('addMap').addEventListener('click', () => {
+  const obj = specToObject(M({ name:'Map', left:W/2, top:H/2, originX:'center', originY:'center', scope:'world', highlights:[{name:'Japan',color:COLORS.tealLight}], routeFrom:'', routeTo:'', routeColor:COLORS.amberLight, anim:{type:'fade',delay:0,duration:600} }));
   canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
 });
 
