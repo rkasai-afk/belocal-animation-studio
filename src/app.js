@@ -612,18 +612,35 @@ function buildStatCard(e, anchor) {
   const parts = e.value != null && e.value !== '' ? parseCounterParts(String(e.value)) : null;
   const finalValueText = e.value != null ? String(e.value) + (e.unit ? ' ' + e.unit : '') : '';
   const cardW = 208, padX = 16, padY = 12;
-  const hasSecondary = !!e.secondary;
-  const cardH = hasSecondary ? 96 : 72;
-  const x0 = anchor.x - padX, y0 = anchor.y - cardH * 0.55;
-  const bg = new fabric.Rect({ left: x0, top: y0, width: cardW, height: cardH, rx: 9, ry: 9, fill: 'rgba(13,22,40,0.78)', stroke: 'rgba(255,255,255,0.18)', strokeWidth: 1, originX: 'left', originY: 'top', selectable: false, evented: false });
-  const labelText = new fabric.Textbox((e.label || '').toUpperCase(), { left: x0 + padX, top: y0 + padY, width: cardW - padX * 2, fontSize: 12.5, fontWeight: 700, fill: 'rgba(255,255,255,0.7)', charSpacing: 50, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
-  const valueText = new fabric.Textbox(finalValueText, { left: x0 + padX, top: y0 + padY + 20, width: cardW - padX * 2, fontSize: 27, fontWeight: 800, fill: '#FFFFFF', originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
-  const shapes = [bg, labelText, valueText];
+  const hasSecondary = !!e.secondary, hasSource = !!e.source;
+  // Cursor-based layout (rather than hand-tuned magic offsets for every row combination) —
+  // each row advances a running Y and reports where it ended, so cardH and every other row's
+  // position fall out of that instead of needing to be kept in sync by hand.
+  let cursorY = padY;
+  const labelText = new fabric.Textbox((e.label || '').toUpperCase(), { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 12.5, fontWeight: 700, fill: 'rgba(255,255,255,0.7)', charSpacing: 50, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  cursorY += 20;
+  const valueText = new fabric.Textbox(finalValueText, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 27, fontWeight: 800, fill: '#FFFFFF', originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  cursorY += 34;
   let secondaryText = null;
   if (hasSecondary) {
-    secondaryText = new fabric.Textbox(e.secondary, { left: x0 + padX, top: y0 + padY + 54, width: cardW - padX * 2, fontSize: 13.5, fontWeight: 600, fill: COLORS.tealLight, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
-    shapes.push(secondaryText);
+    secondaryText = new fabric.Textbox(e.secondary, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 13.5, fontWeight: 600, fill: COLORS.tealLight, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+    cursorY += 22;
   }
+  let sourceText = null;
+  if (hasSource) {
+    sourceText = new fabric.Textbox('SOURCE — ' + e.source, { left: 0, top: cursorY, width: cardW - padX * 2, fontSize: 10, fontWeight: 600, fill: 'rgba(255,255,255,0.5)', charSpacing: 15, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+    cursorY += 18;
+  }
+  const cardH = cursorY + padY;
+  const x0 = anchor.x - padX, y0 = anchor.y - cardH * 0.55;
+  // Shapes were laid out with top=0 at the card's own content origin — shift every one down
+  // by (x0,y0) now that the card's total height (and therefore y0, which depends on cardH) is
+  // known, rather than threading x0/y0 through the cursor loop above.
+  [labelText, valueText, secondaryText, sourceText].forEach(o => { if (o) o.set({ left: o.left + x0 + padX, top: o.top + y0 }); });
+  const bg = new fabric.Rect({ left: x0, top: y0, width: cardW, height: cardH, rx: 9, ry: 9, fill: 'rgba(13,22,40,0.78)', stroke: 'rgba(255,255,255,0.18)', strokeWidth: 1, originX: 'left', originY: 'top', selectable: false, evented: false });
+  const shapes = [bg, labelText, valueText];
+  if (secondaryText) shapes.push(secondaryText);
+  if (sourceText) shapes.push(sourceText);
   // Each shape's position relative to the anchor, recorded at this (unzoomed) base scale —
   // applyMapTimeline replays these as anchor + offset*counterScale each frame, so the card
   // stays the same screen distance from its region regardless of camera zoom (see the
@@ -632,7 +649,8 @@ function buildStatCard(e, anchor) {
   const offsetOf = (o) => ({ dx: o.left - anchor.x, dy: o.top - anchor.y });
   const offsets = { bg: offsetOf(bg), labelText: offsetOf(labelText), valueText: offsetOf(valueText) };
   if (secondaryText) offsets.secondaryText = offsetOf(secondaryText);
-  return { shapes, labelText, valueText, secondaryText, bg, counterParts: parts, finalValueText, anchor, offsets };
+  if (sourceText) offsets.sourceText = offsetOf(sourceText);
+  return { shapes, labelText, valueText, secondaryText, sourceText, bg, counterParts: parts, finalValueText, anchor, offsets };
 }
 
 // ---- event list helpers -----------------------------------------------------------------
@@ -641,7 +659,7 @@ const MAP_EVENT_DEFAULTS = {
   highlight: () => ({ type: 'highlight', id: newMapEventId(), region: '', color: COLORS.tealLight, start: 0, duration: 700, dim: true }),
   zoom: () => ({ type: 'zoom', id: newMapEventId(), region: '', padding: 0.22, start: 0, duration: 1200 }),
   route: () => ({ type: 'route', id: newMapEventId(), from: '', to: '', style: 'arrow', curve: 'medium', movingObject: 'arrow', color: COLORS.amberLight, showTrail: true, start: 0, duration: 1800 }),
-  stat: () => ({ type: 'stat', id: newMapEventId(), region: '', label: 'Population', value: '', unit: '', secondary: '', countUp: true, start: 0, duration: 900 }),
+  stat: () => ({ type: 'stat', id: newMapEventId(), region: '', label: 'Population', value: '', unit: '', secondary: '', source: '', countUp: true, start: 0, duration: 900 }),
 };
 // Old saved projects/templates only ever had a flat `highlights` list and one static
 // `routeFrom`/`routeTo` — synthesize equivalent events (staggered so it still reads as a
@@ -846,7 +864,7 @@ function applyMapTimeline(obj, elapsed) {
     const raw = (elapsed - e.start) / e.duration;
     const visible = raw >= 0;
     const fadeT = easeInOutCubic(raw);
-    [['bg', s.bg], ['labelText', s.labelText], ['valueText', s.valueText], ['secondaryText', s.secondaryText]].forEach(([key, o]) => {
+    [['bg', s.bg], ['labelText', s.labelText], ['valueText', s.valueText], ['secondaryText', s.secondaryText], ['sourceText', s.sourceText]].forEach(([key, o]) => {
       if (!o) return;
       const off = s.offsets[key];
       o.set({
@@ -855,7 +873,7 @@ function applyMapTimeline(obj, elapsed) {
       });
       o.setCoords();
     });
-    [s.bg, s.labelText, s.secondaryText].forEach(o => { if (o) o.set({ opacity: visible ? Math.min(1, fadeT * 1.6) : 0 }); });
+    [s.bg, s.labelText, s.secondaryText, s.sourceText].forEach(o => { if (o) o.set({ opacity: visible ? Math.min(1, fadeT * 1.6) : 0 }); });
     if (s.valueText) {
       s.valueText.set({ opacity: visible ? Math.min(1, fadeT * 1.6) : 0 });
       if (e.countUp && s.counterParts && visible) {
@@ -1045,6 +1063,10 @@ function renderMapEventList(body, obj) {
         const inpSec = document.createElement('input'); inpSec.type = 'text'; inpSec.value = e.secondary || ''; inpSec.placeholder = '↑ 12.4% vs last year';
         inpSec.addEventListener('change', () => { e.secondary = inpSec.value; commit(); });
         body2.appendChild(inpSec);
+        const lSrc = document.createElement('label'); lSrc.textContent = 'Source (optional — shown small at the bottom of the card)'; lSrc.style.fontSize = '11px'; lSrc.style.marginTop = '6px'; body2.appendChild(lSrc);
+        const inpSrc = document.createElement('input'); inpSrc.type = 'text'; inpSrc.value = e.source || ''; inpSrc.placeholder = 'MIC Statistics Bureau, 2023';
+        inpSrc.addEventListener('change', () => { e.source = inpSrc.value; commit(); });
+        body2.appendChild(inpSrc);
         const l4 = document.createElement('label'); l4.textContent = 'Anchor to region (optional — otherwise shown at the bottom of the map)'; l4.style.fontSize = '11px'; l4.style.marginTop = '6px'; body2.appendChild(l4);
         body2.appendChild(makeRegionSelect(e.region, (v) => { e.region = v; }, true));
         const cuLbl = document.createElement('label'); cuLbl.style.fontSize = '11.5px'; cuLbl.style.marginTop = '6px'; cuLbl.style.display = 'flex'; cuLbl.style.alignItems = 'center'; cuLbl.style.gap = '6px';

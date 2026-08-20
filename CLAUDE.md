@@ -122,7 +122,10 @@ tests/test_v14.js             Playwright regression: Map Graphic's events-based 
                                checked on both a large region and a tiny one, the redundant
                                Edit-tab-click regression, the four Map starter templates
                                checked for overflow across all 3 aspect ratios like test_v5's
-                               pattern, save/load round-trip of the full events array)
+                               pattern, save/load round-trip of the full events array, a stat
+                               card's optional secondary+source lines staying inside the card,
+                               and applyFrame(t) determinism — scrubbing 0 -> 5000 -> 2200
+                               reproduces the exact same state as rendering 2200 directly)
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -313,14 +316,25 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   individual children — which is what keeps regions/routes/markers/stat cards geometrically
   coherent through a zoom, and is capped at `MAX_CAMERA_ZOOM` (currently 6x) so a tiny region
   (a prefecture can be 1/15th the width of the whole Japan map) doesn't produce a jarring,
-  un-cinematic lurch. A stat card is deliberately **map-space positioned but screen-space
-  sized**: its shapes are ordinary children of the map group (so the card tracks its region
-  through a camera move), but `applyMapTimeline()` counter-scales them by
+  un-cinematic lurch. **MapSpace vs ScreenSpace** is an explicit distinction, not just an
+  implementation detail: geography, region highlights, routes, and the moving marker are pure
+  MapSpace — native map coordinates, children of the one `fabric.Group` the camera transforms
+  as a whole, so they're geometrically coherent through any pan/zoom by construction. A layer's
+  own entrance (fade/pop/slide, `data.anim`) and the eyebrow/title text around the map are pure
+  ScreenSpace — positioned in canvas coordinates, never touched by `applyCameraState()`. A stat
+  card is the one deliberately hybrid case: **map-space positioned but screen-space sized** —
+  its shapes are ordinary children of the map group (so the card tracks its region through a
+  camera move, i.e. its *position* is MapSpace), but `applyMapTimeline()` counter-scales them by
   `1/camScaleMultiplier` every frame and repositions them as `anchor + baseOffset*counterScale`
-  (offsets recorded once at build time in `buildStatCard()`'s returned `offsets` map) — without
-  this, the card's on-screen size and its distance from the region it annotates would both
-  balloon with camera zoom, the same way a map marker icon shouldn't grow as you zoom a slippy
-  map. Every shape `buildStatCard()` constructs must set `originX`/`originY` explicitly
+  (offsets recorded once at build time in `buildStatCard()`'s returned `offsets` map, alongside
+  `label`/`value`/`secondary`/`source` rows laid out via a running cursor rather than hand-tuned
+  per-row offsets) — without this, the card's on-screen *size* and its distance from the region
+  it annotates would both balloon with camera zoom, the same way a map marker icon shouldn't
+  grow as you zoom a slippy map. If a future layer type needs the reverse hybrid (ScreenSpace
+  position, e.g. fixed to a video-frame corner, but MapSpace-driven content), it should get its
+  own explicit counter-transform the same way — never assume "child of the map group" implies
+  "moves and scales exactly like the map." Every shape `buildStatCard()` constructs must set
+  `originX`/`originY` explicitly
   (`'left'`/`'top'`, matching the `left`/`top` values used to position it) — a plain
   `new fabric.Rect({left, top, ...})` with no origin defaults to **center** origin in this
   vendored Fabric v7 build, so a background card built that way renders centered on `(left,
@@ -445,6 +459,35 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   each one needs before it's real. Production-document import (`.docx`/`.pdf`) *is* built —
   see that same file's "Import Production Document" section for the field mapping and known
   limitations.
+- **Map Graphic control manifest.** The event props panel (`renderMapEventList()`) is hand-
+  coded per event type (`if (e.type === 'highlight') {...} else if (e.type === 'zoom') {...}`
+  etc) rather than generated from a declarative field manifest per type. It works correctly and
+  is covered by tests, but a manifest-driven Inspector (each event type declaring its own
+  `{key, label, control: 'region'|'swatch'|'select'|'text'|'toggle', ...}` list, with one
+  generic renderer walking it) would remove the duplication and make a future event type
+  (e.g. a `label` or `callout` event) cheaper to add. Deferred rather than risked mid-fix —
+  converting working, tested UI code to a new abstraction is a good next isolated task, not
+  something to bundle into a bug-fix pass.
+- **Historical map layer.** No historical (pre-modern-prefecture) boundary data is vendored,
+  and none should be fabricated — `src/map_data.js`'s header already documents its sources for
+  the *modern* boundaries it does ship. A historical layer needs its own vetted dataset (the
+  kind of institution — Geospatial Information Authority of Japan, National Diet Library,
+  university historical-GIS projects — matters for credibility here) before any code is worth
+  writing against it. What *can* be prepared without that data in hand: `data.map.events[]`
+  already treats `region` as an opaque string key into whichever `mapRegionsFor(scope)` list is
+  active, so a future `scope: 'historical-<name>'` entry with its own province/domain path data
+  would reuse `regionAnchor()`/`computeCameraTarget()`/`buildMapGroup()` unmodified — the
+  extension point is the region dataset, not the animation engine. Confidence/provenance
+  metadata (source, date range, disputed/approximate) has no home in the schema yet; it would
+  attach to the region dataset entries, not to individual events.
+- **Manual camera override is engine-only, not exposed in the UI.** `computeCameraTarget(scope,
+  region, padding, manual)` already accepts `{zoom, x, y}` to bypass automatic region framing
+  (and a zoom event's `manualZoom`/`manualX`/`manualY` fields wire straight into it), but
+  `renderMapEventList()`'s zoom-event UI only ever offers the region dropdown + padding preset.
+  This is deliberate scoping, not an oversight: automatic region-based framing is the Level-1
+  "story editor" workflow this tool is built around (per CLAUDE.md's "keep the props panel's
+  language plain" principle below), and hand-tuned pan/zoom is Level-2 refinement that doesn't
+  have a plain-language UI yet. The engine-side hook exists for whenever that's worth building.
 
 ## Who this is for
 

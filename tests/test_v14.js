@@ -261,6 +261,57 @@ async function main() {
   });
   console.log('41. map layer events survive save/load:', JSON.stringify(reloadedEvents), reloadedEvents && reloadedEvents.length === beforeSave.length && reloadedEvents.some(e => e.type === 'route' && e.from === 'Tōkyō') ? 'OK' : 'FAIL');
 
+  // --- 42. a stat card's optional secondary line and source line stay inside the card,
+  // even on top of the region-scaled base cardH (added after a real overflow bug where the
+  // source line's own line-height was underestimated) ---
+  await loadTemplateByLabel('Flight Route');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    const obj = canvas.getObjects().find(o => o.data && o.data.map);
+    const events = obj.data.map.events.map(e => e.type === 'stat' ? Object.assign({}, e, { source: 'MIC Statistics Bureau, 2023', secondary: '↑ up from 5.1M in 2010' }) : e);
+    rebuildMap(obj, { events });
+  });
+  await backToEditMode();
+  await selectActiveMap();
+  await playAndWait(6900);
+  const sourceCheck = await page.evaluate(() => {
+    const obj = canvas.getObjects().find(o => o.data && o.data.map);
+    const rt = obj.data.map._runtime;
+    const s = rt.statRuntimes.get(obj.data.map.events.find(e => e.type === 'stat').id);
+    const bgR = s.bg.getBoundingRect(true, true);
+    const within = (o) => { const r = o.getBoundingRect(true, true); return r.left >= bgR.left - 1 && r.top >= bgR.top - 1 && (r.left + r.width) <= (bgR.left + bgR.width + 1) && (r.top + r.height) <= (bgR.top + bgR.height + 1); };
+    return { sourceText: s.sourceText ? s.sourceText.text : null, secondaryOK: within(s.secondaryText), sourceOK: within(s.sourceText) };
+  });
+  console.log('42. stat card secondary + source lines stay inside the card:', JSON.stringify(sourceCheck), sourceCheck.secondaryOK && sourceCheck.sourceOK ? 'OK' : 'FAIL');
+  await backToEditMode();
+
+  // --- 43. determinism: applyFrame(t) is a pure function of t (given one captureBaseState())
+  // — scrubbing to 0, then 5000, then back to 2200 must reproduce the exact same visual state
+  // as rendering 2200 directly, matching every object touched by the map's own sub-timeline ---
+  await loadTemplateByLabel('Flight Route');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => captureBaseState());
+  function snapshotAt(t) {
+    return page.evaluate((elapsed) => {
+      applyFrame(elapsed);
+      const obj = canvas.getObjects().find(o => o.data && o.data.map);
+      const rt = obj.data.map._runtime;
+      const r = rt.routeRuntimes.get(obj.data.map.events.find(e => e.type === 'route').id);
+      const s = rt.statRuntimes.get(obj.data.map.events.find(e => e.type === 'stat').id);
+      return {
+        mapLeft: obj.left, mapTop: obj.top, mapScaleX: obj.scaleX,
+        markerLeft: r.marker.left, markerAngle: r.marker.angle, markerOpacity: r.marker.opacity,
+        lineDashOffset: r.lineShape.strokeDashOffset, statValueText: s.valueText.text, statOpacity: s.valueText.opacity,
+        eyebrowOpacity: canvas.getObjects().find(o => o.name === 'Eyebrow').opacity,
+      };
+    }, t);
+  }
+  const direct2200 = await snapshotAt(2200);
+  await snapshotAt(0);
+  await snapshotAt(5000);
+  const afterSeek2200 = await snapshotAt(2200);
+  console.log('43. deterministic frame re-seek (0 -> 5000 -> 2200 matches direct 2200):', JSON.stringify(direct2200) === JSON.stringify(afterSeek2200) ? 'OK' : 'FAIL');
+
   console.log('HAD ERROR:', hadError);
   await browser.close();
   if (hadError) process.exit(1);
