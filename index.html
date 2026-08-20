@@ -1138,58 +1138,431 @@ function rebuildPin(obj, patch) {
   updateScrubRange();
 }
 
-/* ---- Map Graphic: illustrated country/prefecture outlines with optional fill          ---- */
-/* ---- highlights and a curved route arrow between two regions — unlike Map/Location    ---- */
-/* ---- Pin above, this IS real geographic data, but vendored as static vector boundary   ---- */
-/* ---- paths (WORLD_MAP_DATA/JAPAN_MAP_DATA, src/map_data.js) rather than live tiles, so  ---- */
-/* ---- it needs zero network requests at runtime — see that file's header comment for    ---- */
-/* ---- the data sources. One regenerable group, same pattern as Dot-Grid/Pin/Org-Chart.   ---- */
+/* ================================================================================
+   MAP GRAPHIC — geographic storytelling engine
+   ================================================================================
+   Replaces the old "one flat highlight list + one static route" version with a real
+   per-map sub-timeline (data.map.events[]) so highlight/zoom/route/stat moments can each
+   have their own start/duration/easing instead of being fused into one whole-group fade.
+   Everything below is plain Fabric.js Canvas primitives — no SVG/DOM/GSAP — vendored
+   region path data (src/map_data.js) + hand-written geometry (this file) + the existing
+   applyFrame() rAF loop, which now also drives a map object's internal timeline.
+
+   Architecture (see CLAUDE.md "Map Graphic" note for the full writeup):
+
+     Map object (one fabric.Group, like Dot-Grid/Pin/Org-Chart)
+       data.map = {
+         scope, baseTransform: {left,top,scaleX,scaleY},   // camera reference ("full extent")
+         events: [ {type:'highlight'|'zoom'|'route'|'stat', start, duration, ...}, ... ],
+         _runtime: { regionPaths, routeGroups, statGroups } // cached child refs, rebuilt each
+       }                                                     // time the group is regenerated
+
+   buildMapGroup() renders the FINAL/settled state of every event (used for the static
+   editor view, same convention every other layer already follows: edit mode shows the
+   resting look, Preview/Record is what actually plays the animation).
+   applyMapTimeline() is the per-frame counterpart, called from applyFrame() during
+   Preview/scrub — it interpolates the SAME target values buildMapGroup() computes, so
+   the animation always lands exactly on the static look, never a mismatched "pop".
+   ================================================================================ */
+
 function mapRegionsFor(scope) {
   return scope === 'japan' ? JAPAN_MAP_DATA.prefectures : WORLD_MAP_DATA.countries;
 }
-function buildRouteArrowShapes(from, to, color) {
+
+// ---- geometry: parsing the vendored path data ----------------------------------------
+// Vendored region paths (src/map_data.js) use only M/m, L/l, Z/z, sometimes as SVG's
+// compact relative-lineto shorthand (chained coordinate pairs after one command letter).
+function parseMapPathSubpaths(pathStr) {
+  const tokens = pathStr.match(/[MLZmlz]|-?\d*\.?\d+/g) || [];
+  const subpaths = [];
+  let current = null, cx = 0, cy = 0, cmd = null, i = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    if (/^[MLZmlz]$/.test(tok)) { cmd = tok; i++; continue; }
+    const x = parseFloat(tok), y = parseFloat(tokens[i + 1]);
+    i += 2;
+    if (cmd === 'M' || cmd === 'L') { cx = x; cy = y; }
+    else if (cmd === 'm' || cmd === 'l') { cx += x; cy += y; }
+    if (cmd === 'M' || cmd === 'm') {
+      if (current && current.length > 2) subpaths.push(current);
+      current = [[cx, cy]];
+      cmd = (cmd === 'M') ? 'L' : 'l';
+    } else {
+      if (!current) current = [[cx, cy]]; else current.push([cx, cy]);
+    }
+  }
+  if (current && current.length > 2) subpaths.push(current);
+  return subpaths;
+}
+function polygonAreaCentroid(points) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p0 = points[i], p1 = points[(i + 1) % points.length];
+    const cross = p0[0] * p1[1] - p1[0] * p0[1];
+    a += cross; cx += (p0[0] + p1[0]) * cross; cy += (p0[1] + p1[1]) * cross;
+  }
+  a *= 0.5;
+  if (Math.abs(a) < 1e-9) {
+    const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+    return { area: 0, x: xs.reduce((s, v) => s + v, 0) / xs.length, y: ys.reduce((s, v) => s + v, 0) / ys.length };
+  }
+  return { area: Math.abs(a), x: cx / (6 * a), y: cy / (6 * a) };
+}
+function boundsOfPoints(points) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) { if (x < minX) minX = x; if (y < minY) minY = y; if (x > maxX) maxX = x; if (y > maxY) maxY = y; }
+  return { minX, minY, maxX, maxY };
+}
+// A region's raw bounding-box center is NOT a safe "where is this place" anchor: several
+// prefectures/countries include far-flung islands or get split at the antimeridian (Tokyo's
+// bbox reaches ~500km south to the Izu/Ogasawara islands; Russia's spans almost the entire
+// map width when split at +/-180deg), which drags a naive bbox-center miles from the actual
+// landmass — this was the root cause of routes not starting/ending where expected. Parsing
+// into subpaths and taking the largest-by-area one's true polygon centroid (shoelace
+// formula) fixes this — the same "largest ring wins" convention GIS label-placement tools
+// use — for BOTH route anchors and camera zoom targets.
+const _regionAnchorCache = new Map();
+function regionAnchor(scope, name, pathStr) {
+  const key = scope + '|' + name;
+  if (_regionAnchorCache.has(key)) return _regionAnchorCache.get(key);
+  const subpaths = parseMapPathSubpaths(pathStr);
+  let best = null;
+  for (const sp of subpaths) {
+    const c = polygonAreaCentroid(sp);
+    if (!best || c.area > best.area) best = { x: c.x, y: c.y, area: c.area, bounds: boundsOfPoints(sp) };
+  }
+  _regionAnchorCache.set(key, best);
+  return best;
+}
+function pointInPolygon(px, py, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i][0], yi = points[i][1], xj = points[j][0], yj = points[j][1];
+    if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function findRegionAtPoint(scope, px, py) {
+  for (const r of mapRegionsFor(scope)) {
+    for (const sp of parseMapPathSubpaths(r.path)) {
+      if (pointInPolygon(px, py, sp)) return r.name;
+    }
+  }
+  return null;
+}
+const _mapNativeBoundsCache = new Map();
+function mapNativeBounds(scope) {
+  if (_mapNativeBoundsCache.has(scope)) return _mapNativeBoundsCache.get(scope);
+  const regions = mapRegionsFor(scope);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  regions.forEach(r => {
+    for (const sp of parseMapPathSubpaths(r.path)) {
+      const b = boundsOfPoints(sp);
+      if (b.minX < minX) minX = b.minX; if (b.minY < minY) minY = b.minY;
+      if (b.maxX > maxX) maxX = b.maxX; if (b.maxY > maxY) maxY = b.maxY;
+    }
+  });
+  const result = { minX, minY, maxX, maxY };
+  _mapNativeBoundsCache.set(scope, result);
+  return result;
+}
+
+// ---- color + easing -------------------------------------------------------------------
+function parseColorToRgba(c) {
+  if (!c) return { r: 255, g: 255, b: 255, a: 0 };
+  c = String(c).trim();
+  if (c.startsWith('rgb')) {
+    const nums = (c.match(/[\d.]+/g) || [255, 255, 255]).map(Number);
+    return { r: nums[0], g: nums[1], b: nums[2], a: nums.length > 3 ? nums[3] : 1 };
+  }
+  if (c.startsWith('#')) {
+    let hex = c.slice(1);
+    if (hex.length === 3) hex = hex.split('').map(ch => ch + ch).join('');
+    const num = parseInt(hex, 16);
+    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255, a: 1 };
+  }
+  return { r: 255, g: 255, b: 255, a: 1 };
+}
+function lerpColor(colorA, colorB, t) {
+  const a = parseColorToRgba(colorA), b = parseColorToRgba(colorB);
+  const r = Math.round(a.r + (b.r - a.r) * t), g = Math.round(a.g + (b.g - a.g) * t), bl = Math.round(a.b + (b.b - a.b) * t);
+  const al = a.a + (b.a - a.a) * t;
+  return `rgba(${r},${g},${bl},${al.toFixed(3)})`;
+}
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+// Disney's "slow in / slow out" — the standard for camera moves, color settles and any
+// transition that should feel considered rather than mechanical (vs. the app's existing
+// ease() cubic-out, kept for simple entrances elsewhere). See CLAUDE.md map research notes.
+function easeInOutCubic(t) { t = clamp01(t); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+
+// ---- quadratic bezier: point, tangent angle, arc-length table -------------------------
+function bezierPoint(p0, c, p2, t) {
+  const mt = 1 - t;
+  return { x: mt * mt * p0.x + 2 * mt * t * c.x + t * t * p2.x, y: mt * mt * p0.y + 2 * mt * t * c.y + t * t * p2.y };
+}
+function bezierTangentAngle(p0, c, p2, t) {
+  const mt = 1 - t;
+  const dx = 2 * mt * (c.x - p0.x) + 2 * t * (p2.x - c.x);
+  const dy = 2 * mt * (c.y - p0.y) + 2 * t * (p2.y - c.y);
+  return Math.atan2(dy, dx) * 180 / Math.PI;
+}
+function buildArcLengthTable(p0, c, p2, samples) {
+  samples = samples || 40;
+  const table = [{ t: 0, cum: 0 }];
+  let prev = p0, cum = 0;
+  for (let i = 1; i <= samples; i++) {
+    const t = i / samples;
+    const pt = bezierPoint(p0, c, p2, t);
+    cum += Math.hypot(pt.x - prev.x, pt.y - prev.y);
+    table.push({ t, cum });
+    prev = pt;
+  }
+  return table;
+}
+// Finds the parameter t whose arc-length fraction along the curve equals `frac` (0..1) —
+// gives visually constant travel speed along a curved route instead of the uneven speed a
+// raw parametric t would produce on a sharply bowed bezier. Standard technique (the same
+// idea as SVGPathElement.getPointAtLength, which Fabric.js canvas paths don't expose).
+function tAtArcFraction(table, frac) {
+  const total = table[table.length - 1].cum;
+  const target = clamp01(frac) * total;
+  for (let i = 1; i < table.length; i++) {
+    if (table[i].cum >= target) {
+      const a = table[i - 1], b = table[i];
+      const span = b.cum - a.cum;
+      const localT = span > 1e-9 ? (target - a.cum) / span : 0;
+      return lerp(a.t, b.t, localT);
+    }
+  }
+  return 1;
+}
+
+// ---- camera framing: D3 fitExtent-style bounds-to-viewport fit ------------------------
+// Computes how far to zoom/pan (relative to the map's own "full extent" base placement) so
+// a target region fills a good portion of the frame the whole map currently occupies, with
+// padding — the same fit-to-bounds idea d3-geo's projection.fitExtent uses, just expressed
+// as a Fabric Group scale/translate delta instead of a re-projection. Supports chaining
+// (fromState = a previous zoom event's own target) for multi-stage camera moves.
+// A prefecture-scale region (Kanagawa) can be 1/15th the width of the whole Japan map, which
+// an uncapped "fit the region to the frame" formula would zoom into literally — technically
+// accurate, but it reads as a jarring, un-cinematic lurch rather than a considered camera
+// move, and blows up anything anchored to that spot (a stat card's own on-screen size scales
+// with the whole map group, camera included — see the stat block below). Capping how far any
+// single stage can push in keeps every zoom stage looking like a deliberate editorial choice.
+const MAX_CAMERA_ZOOM = 6;
+function computeCameraTarget(scope, regionName, padding, manual) {
+  if (manual && typeof manual.zoom === 'number') {
+    return { scaleMultiplier: Math.max(1, Math.min(MAX_CAMERA_ZOOM, manual.zoom)), dxNative: manual.x || 0, dyNative: manual.y || 0 };
+  }
+  const full = mapNativeBounds(scope);
+  const nativeCenter = { x: (full.minX + full.maxX) / 2, y: (full.minY + full.maxY) / 2 };
+  if (!regionName) return { scaleMultiplier: 1, dxNative: 0, dyNative: 0 };
+  const region = mapRegionsFor(scope).find(r => r.name.toLowerCase() === regionName.toLowerCase());
+  if (!region) return { scaleMultiplier: 1, dxNative: 0, dyNative: 0 };
+  const anchor = regionAnchor(scope, region.name, region.path);
+  const rb = anchor.bounds;
+  const pad = typeof padding === 'number' ? padding : 0.2;
+  const regionW = Math.max(1, rb.maxX - rb.minX) * (1 + pad * 2);
+  const regionH = Math.max(1, rb.maxY - rb.minY) * (1 + pad * 2);
+  const fullW = full.maxX - full.minX, fullH = full.maxY - full.minY;
+  const scaleMultiplier = Math.max(1, Math.min(MAX_CAMERA_ZOOM, fullW / regionW, fullH / regionH));
+  const regionCenter = { x: (rb.minX + rb.maxX) / 2, y: (rb.minY + rb.maxY) / 2 };
+  return { scaleMultiplier, dxNative: regionCenter.x - nativeCenter.x, dyNative: regionCenter.y - nativeCenter.y };
+}
+// Applies a camera state (as returned by computeCameraTarget, or interpolated between two
+// of them) to the map group's actual transform. Scaling/panning the WHOLE group is what
+// keeps every child — regions, routes, markers, labels — perfectly attached during the
+// move, since they're all one Fabric object being transformed together, not independently
+// animated pieces trying to stay in sync.
+function applyCameraState(obj, base, camState) {
+  const newScaleX = base.scaleX * camState.scaleMultiplier;
+  const newScaleY = base.scaleY * camState.scaleMultiplier;
+  obj.set({
+    scaleX: newScaleX, scaleY: newScaleY,
+    left: base.left - camState.dxNative * newScaleX,
+    top: base.top - camState.dyNative * newScaleY,
+  });
+}
+function lerpCameraState(a, b, t) {
+  return { scaleMultiplier: lerp(a.scaleMultiplier, b.scaleMultiplier, t), dxNative: lerp(a.dxNative, b.dxNative, t), dyNative: lerp(a.dyNative, b.dyNative, t) };
+}
+
+// ---- route geometry & presets -----------------------------------------------------------
+const ROUTE_CURVE_FACTORS = { straight: 0, low: 0.12, medium: 0.26, high: 0.42 };
+function routeGeometry(from, to, curve) {
   const dx = to.x - from.x, dy = to.y - from.y;
   const dist = Math.hypot(dx, dy) || 1;
-  const bow = Math.min(dist * 0.28, 90);
+  const factor = ROUTE_CURVE_FACTORS[curve] != null ? ROUTE_CURVE_FACTORS[curve] : ROUTE_CURVE_FACTORS.medium;
+  const bow = dist * factor;
   const mx = (from.x + to.x) / 2 - (dy / dist) * bow;
   const my = (from.y + to.y) / 2 + (dx / dist) * bow;
-  const d = `M ${from.x} ${from.y} Q ${mx} ${my} ${to.x} ${to.y}`;
-  const line = new fabric.Path(d, { fill:'', stroke:color, strokeWidth:5, strokeLineCap:'round', selectable:false, evented:false });
-  const angle = Math.atan2(to.y - my, to.x - mx) * 180 / Math.PI;
-  const head = new fabric.Triangle({ left:to.x, top:to.y, width:20, height:22, fill:color, originX:'center', originY:'center', angle:angle + 90, selectable:false, evented:false });
-  const dotFrom = new fabric.Circle({ left:from.x, top:from.y, radius:7, fill:color, stroke:'#FFFFFF', strokeWidth:1.5, originX:'center', originY:'center', selectable:false, evented:false });
-  const dotTo = new fabric.Circle({ left:to.x, top:to.y, radius:7, fill:color, stroke:'#FFFFFF', strokeWidth:1.5, originX:'center', originY:'center', selectable:false, evented:false });
-  return [line, dotFrom, dotTo, head];
+  const control = { x: mx, y: my };
+  const table = buildArcLengthTable(from, control, to, 40);
+  return { from, to, control, table, dist };
 }
-function buildMapGroup(scope, highlights, routeFrom, routeTo, routeColor) {
+// A small abstract dart/chevron silhouette for the 'plane' moving-object preset — reads as
+// "aircraft" at documentary/editorial scale without a literal, cartoonish icon.
+function buildPlaneShape(color) {
+  return new fabric.Path('M 0 -11 L 3.5 -2 L 11 3 L 3 3.6 L 3.6 10 L 0 7 L -3.6 10 L -3 3.6 L -11 3 L -3.5 -2 Z', {
+    fill: color, stroke: 'rgba(0,0,0,0.25)', strokeWidth: 0.6, originX: 'center', originY: 'center', selectable: false, evented: false,
+  });
+}
+function buildArrowHeadShape(color) {
+  return new fabric.Triangle({ width: 18, height: 20, fill: color, originX: 'center', originY: 'center', selectable: false, evented: false });
+}
+
+// ---- statistics overlay (map-space: anchored to a region, or a default caption spot) ---
+function statAnchorPoint(scope, e) {
+  if (e.region) {
+    const region = mapRegionsFor(scope).find(r => r.name.toLowerCase() === e.region.toLowerCase());
+    if (region) { const a = regionAnchor(scope, region.name, region.path); return { x: a.x, y: a.y }; }
+  }
+  const b = mapNativeBounds(scope);
+  return { x: (b.minX + b.maxX) / 2, y: b.maxY - (b.maxY - b.minY) * 0.06 };
+}
+function buildStatCard(e, anchor) {
+  const parts = e.value != null && e.value !== '' ? parseCounterParts(String(e.value)) : null;
+  const finalValueText = e.value != null ? String(e.value) + (e.unit ? ' ' + e.unit : '') : '';
+  const cardW = 208, padX = 16, padY = 12;
+  const hasSecondary = !!e.secondary;
+  const cardH = hasSecondary ? 96 : 72;
+  const x0 = anchor.x - padX, y0 = anchor.y - cardH * 0.55;
+  const bg = new fabric.Rect({ left: x0, top: y0, width: cardW, height: cardH, rx: 9, ry: 9, fill: 'rgba(13,22,40,0.78)', stroke: 'rgba(255,255,255,0.18)', strokeWidth: 1, originX: 'left', originY: 'top', selectable: false, evented: false });
+  const labelText = new fabric.Textbox((e.label || '').toUpperCase(), { left: x0 + padX, top: y0 + padY, width: cardW - padX * 2, fontSize: 12.5, fontWeight: 700, fill: 'rgba(255,255,255,0.7)', charSpacing: 50, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  const valueText = new fabric.Textbox(finalValueText, { left: x0 + padX, top: y0 + padY + 20, width: cardW - padX * 2, fontSize: 27, fontWeight: 800, fill: '#FFFFFF', originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  const shapes = [bg, labelText, valueText];
+  let secondaryText = null;
+  if (hasSecondary) {
+    secondaryText = new fabric.Textbox(e.secondary, { left: x0 + padX, top: y0 + padY + 54, width: cardW - padX * 2, fontSize: 13.5, fontWeight: 600, fill: COLORS.tealLight, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+    shapes.push(secondaryText);
+  }
+  // Each shape's position relative to the anchor, recorded at this (unzoomed) base scale —
+  // applyMapTimeline replays these as anchor + offset*counterScale each frame, so the card
+  // stays the same screen distance from its region regardless of camera zoom (see the
+  // counter-scaling note beside camScaleMultiplier for why the card can't just inherit the
+  // group's own zoom scale the way a highlight/route/marker legitimately does).
+  const offsetOf = (o) => ({ dx: o.left - anchor.x, dy: o.top - anchor.y });
+  const offsets = { bg: offsetOf(bg), labelText: offsetOf(labelText), valueText: offsetOf(valueText) };
+  if (secondaryText) offsets.secondaryText = offsetOf(secondaryText);
+  return { shapes, labelText, valueText, secondaryText, bg, counterParts: parts, finalValueText, anchor, offsets };
+}
+
+// ---- event list helpers -----------------------------------------------------------------
+function newMapEventId() { return 'ev_' + Math.random().toString(36).slice(2, 9); }
+const MAP_EVENT_DEFAULTS = {
+  highlight: () => ({ type: 'highlight', id: newMapEventId(), region: '', color: COLORS.tealLight, start: 0, duration: 700, dim: true }),
+  zoom: () => ({ type: 'zoom', id: newMapEventId(), region: '', padding: 0.22, start: 0, duration: 1200 }),
+  route: () => ({ type: 'route', id: newMapEventId(), from: '', to: '', style: 'arrow', curve: 'medium', movingObject: 'arrow', color: COLORS.amberLight, showTrail: true, start: 0, duration: 1800 }),
+  stat: () => ({ type: 'stat', id: newMapEventId(), region: '', label: 'Population', value: '', unit: '', secondary: '', countUp: true, start: 0, duration: 900 }),
+};
+// Old saved projects/templates only ever had a flat `highlights` list and one static
+// `routeFrom`/`routeTo` — synthesize equivalent events (staggered so it still reads as a
+// sequence rather than everything landing at once) so those keep working unmodified.
+function migrateMapConfig(cfg) {
+  if (cfg.events) return cfg;
+  const events = [];
+  let t = 0;
+  (cfg.highlights || []).forEach(h => {
+    events.push({ type: 'highlight', id: newMapEventId(), region: h.name, color: h.color, start: t, duration: 600, dim: false });
+    t += 300;
+  });
+  if (cfg.routeFrom && cfg.routeTo) {
+    events.push({ type: 'route', id: newMapEventId(), from: cfg.routeFrom, to: cfg.routeTo, style: 'arrow', curve: 'medium', movingObject: 'arrow', color: cfg.routeColor || COLORS.amberLight, showTrail: true, start: t, duration: 1800 });
+  }
+  return Object.assign({}, cfg, { events });
+}
+
+// ---- build (final/settled state — the editor's non-playing view) ----------------------
+function buildMapGroup(scope, events) {
   scope = scope === 'japan' ? 'japan' : 'world';
+  events = events || [];
   const regions = mapRegionsFor(scope);
-  const highlightByName = new Map((highlights || []).map(h => [h.name.toLowerCase(), h.color]));
   const shapes = [];
-  const centroids = new Map();
+  const regionPaths = new Map();
+  const baseFill = 'rgba(255,255,255,0.14)', baseStroke = 'rgba(255,255,255,0.45)';
+  const baseStrokeWidth = scope === 'japan' ? 1.2 : 0.7;
+
+  const highlightEvents = events.filter(e => e.type === 'highlight' && e.region);
+  const finalHighlight = new Map();
+  let anyDim = false;
+  highlightEvents.forEach(e => { finalHighlight.set(e.region.toLowerCase(), { color: e.color || COLORS.amberLight }); if (e.dim !== false) anyDim = true; });
+
   regions.forEach(r => {
-    const key = r.name.toLowerCase();
+    const hl = finalHighlight.get(r.name.toLowerCase());
     const path = new fabric.Path(r.path, {
-      fill: highlightByName.get(key) || 'rgba(255,255,255,0.14)',
-      stroke: 'rgba(255,255,255,0.45)', strokeWidth: scope === 'japan' ? 1.2 : 0.7,
-      strokeLineJoin: 'round', selectable:false, evented:false,
+      fill: hl ? hl.color : baseFill,
+      stroke: hl ? '#FFFFFF' : baseStroke,
+      strokeWidth: hl ? baseStrokeWidth * 2 : baseStrokeWidth,
+      strokeLineJoin: 'round',
+      opacity: (anyDim && !hl) ? 0.35 : 1,
+      selectable: false, evented: false,
     });
     shapes.push(path);
-    centroids.set(key, { x: path.left + path.width / 2, y: path.top + path.height / 2 });
+    regionPaths.set(r.name, path);
   });
-  const from = routeFrom && centroids.get(routeFrom.toLowerCase());
-  const to = routeTo && centroids.get(routeTo.toLowerCase());
-  if (from && to) shapes.push(...buildRouteArrowShapes(from, to, routeColor || COLORS.amberLight));
-  return new fabric.Group(shapes, { subTargetCheck:false });
+
+  const routeRuntimes = new Map();
+  events.filter(e => e.type === 'route' && e.from && e.to).forEach(e => {
+    const fromR = regions.find(r => r.name.toLowerCase() === e.from.toLowerCase());
+    const toR = regions.find(r => r.name.toLowerCase() === e.to.toLowerCase());
+    if (!fromR || !toR) return;
+    const fromA = regionAnchor(scope, fromR.name, fromR.path), toA = regionAnchor(scope, toR.name, toR.path);
+    const geo = routeGeometry({ x: fromA.x, y: fromA.y }, { x: toA.x, y: toA.y }, e.curve);
+    const color = e.color || COLORS.amberLight;
+    const d = `M ${geo.from.x} ${geo.from.y} Q ${geo.control.x} ${geo.control.y} ${geo.to.x} ${geo.to.y}`;
+    const lineShape = new fabric.Path(d, {
+      fill: '', stroke: color, strokeWidth: e.style === 'flight' ? 3.2 : 4.5, strokeLineCap: 'round',
+      strokeDashArray: e.dashed ? [11, 9] : null, opacity: e.showTrail === false ? 0 : 0.85, selectable: false, evented: false,
+    });
+    const originDot = e.originMarker !== 'none' ? new fabric.Circle({ left: geo.from.x, top: geo.from.y, radius: 6, fill: color, stroke: '#FFFFFF', strokeWidth: 1.5, originX: 'center', originY: 'center', selectable: false, evented: false }) : null;
+    const destDot = e.destMarker !== 'none' ? new fabric.Circle({ left: geo.to.x, top: geo.to.y, radius: 6, fill: color, stroke: '#FFFFFF', strokeWidth: 1.5, originX: 'center', originY: 'center', selectable: false, evented: false }) : null;
+    let marker = null;
+    const finalAngle = bezierTangentAngle(geo.from, geo.control, geo.to, 1);
+    if (e.movingObject === 'plane') { marker = buildPlaneShape(color); marker.set({ left: geo.to.x, top: geo.to.y, angle: finalAngle + 90 }); }
+    else if (e.movingObject === 'arrow') { marker = buildArrowHeadShape(color); marker.set({ left: geo.to.x, top: geo.to.y, angle: finalAngle + 90 }); }
+    shapes.push(lineShape);
+    if (originDot) shapes.push(originDot);
+    if (destDot) shapes.push(destDot);
+    if (marker) shapes.push(marker);
+    routeRuntimes.set(e.id, { lineShape, originDot, destDot, marker, geo, totalLen: geo.table[geo.table.length - 1].cum });
+  });
+
+  const statRuntimes = new Map();
+  events.filter(e => e.type === 'stat').forEach(e => {
+    const anchor = statAnchorPoint(scope, e);
+    const built = buildStatCard(e, anchor);
+    shapes.push(...built.shapes);
+    statRuntimes.set(e.id, built);
+  });
+
+  // Fabric.Group re-origins every child's left/top to be relative to the group's own
+  // bounding-box center at construction time (verified empirically — see the map-system
+  // design notes). That shift is one constant (dx,dy) applied identically to every child,
+  // so capturing it once (via a shape whose pre-group native position we still know) lets
+  // any later per-frame update convert a native coordinate back into the right
+  // group-relative position — needed for the moving route marker.
+  const refShape = shapes[0];
+  const preGroupLeft = refShape.left, preGroupTop = refShape.top;
+  const group = new fabric.Group(shapes, { subTargetCheck: false });
+  const groupOffsetX = preGroupLeft - refShape.left, groupOffsetY = preGroupTop - refShape.top;
+  return { group, runtime: { regionPaths, routeRuntimes, statRuntimes, groupOffsetX, groupOffsetY } };
 }
+
 function rebuildMap(obj, patch) {
   const cfg = Object.assign({}, obj.data.map, patch);
   const idx = canvas.getObjects().indexOf(obj);
   const anim = obj.data.anim;
-  const newObj = buildMapGroup(cfg.scope, cfg.highlights, cfg.routeFrom, cfg.routeTo, cfg.routeColor);
+  const baseTransform = obj.data.map.baseTransform; // preserved across edits — see note below
+  const { group: newObj, runtime } = buildMapGroup(cfg.scope, cfg.events);
   newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
   newObj.set('name', obj.get('name'));
-  newObj.data = { role:null, isCounter:false, anim, map: cfg };
+  cfg._runtime = runtime;
+  // If this edit changed the base placement itself (drag/resize with no zoom event active),
+  // treat the object's current transform as the new camera "full extent" reference.
+  const hasZoom = (cfg.events || []).some(e => e.type === 'zoom');
+  cfg.baseTransform = hasZoom ? baseTransform : { left: newObj.left, top: newObj.top, scaleX: newObj.scaleX, scaleY: newObj.scaleY };
+  newObj.data = { role: null, isCounter: false, anim, map: cfg };
   canvas.remove(obj);
   canvas.insertAt(idx, newObj);
   canvas.setActiveObject(newObj);
@@ -1199,6 +1572,354 @@ function rebuildMap(obj, patch) {
   updateScrubRange();
 }
 
+// ---- playback: per-frame interpolation (called from applyFrame during Preview/scrub) ---
+function applyMapTimeline(obj, elapsed) {
+  const cfg = obj.data.map;
+  if (!cfg || !cfg.events || !cfg.events.length) return;
+  const rt = cfg._runtime;
+  if (!rt) return;
+  const scope = cfg.scope;
+  const offX = rt.groupOffsetX || 0, offY = rt.groupOffsetY || 0;
+
+  // --- highlight + dim ---
+  const highlightEvents = cfg.events.filter(e => e.type === 'highlight' && e.region);
+  const activeTouch = new Map(); // region name (lower) -> {t, color}
+  highlightEvents.forEach(e => {
+    if (elapsed < e.start) return;
+    const t = easeInOutCubic((elapsed - e.start) / e.duration);
+    activeTouch.set(e.region.toLowerCase(), { t, color: e.color || COLORS.amberLight });
+  });
+  const anyDimActive = highlightEvents.some(e => e.dim !== false && elapsed >= e.start);
+  const dimT = anyDimActive ? Math.max(0, ...highlightEvents.filter(e => e.dim !== false && elapsed >= e.start).map(e => easeInOutCubic((elapsed - e.start) / e.duration))) : 0;
+  const baseFill = 'rgba(255,255,255,0.14)', baseStroke = 'rgba(255,255,255,0.45)';
+  const baseSW = scope === 'japan' ? 1.2 : 0.7;
+  rt.regionPaths.forEach((path, name) => {
+    const touch = activeTouch.get(name.toLowerCase());
+    if (touch) {
+      path.set({ fill: lerpColor(baseFill, touch.color, touch.t), stroke: lerpColor(baseStroke, '#FFFFFF', touch.t), strokeWidth: lerp(baseSW, baseSW * 2, touch.t), opacity: 1 });
+    } else {
+      path.set({ fill: baseFill, stroke: baseStroke, strokeWidth: baseSW, opacity: lerp(1, 0.35, dimT) });
+    }
+  });
+
+  // --- camera (chained zoom stages) ---
+  const zoomEvents = cfg.events.filter(e => e.type === 'zoom').sort((a, b) => a.start - b.start);
+  let camScaleMultiplier = 1;
+  if (zoomEvents.length && cfg.baseTransform) {
+    let camState = { scaleMultiplier: 1, dxNative: 0, dyNative: 0 };
+    for (const e of zoomEvents) {
+      const target = computeCameraTarget(scope, e.region, e.padding, e.manualZoom != null ? { zoom: e.manualZoom, x: e.manualX, y: e.manualY } : null);
+      if (elapsed < e.start) break;
+      const t = elapsed >= e.start + e.duration ? 1 : easeInOutCubic((elapsed - e.start) / e.duration);
+      camState = lerpCameraState(camState, target, t);
+    }
+    applyCameraState(obj, cfg.baseTransform, camState);
+    obj.setCoords();
+    camScaleMultiplier = camState.scaleMultiplier;
+  }
+
+  // --- routes: path draw + marker travel with tangent-based rotation ---
+  cfg.events.filter(e => e.type === 'route').forEach(e => {
+    const r = rt.routeRuntimes.get(e.id);
+    if (!r) return;
+    const raw = (elapsed - e.start) / e.duration;
+    const revealFrac = clamp01(raw);
+    const eased = easeInOutCubic(raw);
+    if (r.lineShape) {
+      r.lineShape.set({ strokeDashArray: [r.totalLen, r.totalLen], strokeDashOffset: r.totalLen * (1 - revealFrac), opacity: e.showTrail === false ? 0 : (raw < 0 ? 0 : 0.85) });
+    }
+    if (r.originDot) r.originDot.set({ opacity: raw < 0 ? 0 : Math.min(1, Math.max(raw, 0) * 6) });
+    if (r.destDot) r.destDot.set({ opacity: revealFrac >= 0.985 ? 1 : 0 });
+    if (r.marker) {
+      if (raw < 0) {
+        r.marker.set({ opacity: 0 });
+      } else {
+        const tt = tAtArcFraction(r.geo.table, eased);
+        const pt = bezierPoint(r.geo.from, r.geo.control, r.geo.to, tt);
+        const ang = bezierTangentAngle(r.geo.from, r.geo.control, r.geo.to, tt);
+        r.marker.set({ left: pt.x - offX, top: pt.y - offY, angle: ang + 90, opacity: 1 });
+        r.marker.setCoords();
+      }
+    }
+  });
+
+  // --- statistics: fade/slide + optional count-up ---
+  // A stat card is map-space (anchored to a region's coordinates, so it stays put through a
+  // camera pan) but its READABILITY needs to be screen-space — broadcast/documentary info
+  // cards hold a constant on-screen size regardless of how far the camera has pushed in, the
+  // same way a Mapbox marker icon doesn't balloon as you zoom the map under it. Since the
+  // card's shapes are children of the same Fabric.Group the camera zoom scales as a whole,
+  // counter-scaling each shape by 1/camScaleMultiplier (around its own top-left origin, so
+  // its anchor point doesn't drift) cancels the camera's contribution and leaves only the
+  // template's own base map scale — see MAX_CAMERA_ZOOM above for the matching camera-side cap.
+  const statCounterScale = 1 / Math.max(1, camScaleMultiplier);
+  cfg.events.filter(e => e.type === 'stat').forEach(e => {
+    const s = rt.statRuntimes.get(e.id);
+    if (!s) return;
+    const raw = (elapsed - e.start) / e.duration;
+    const visible = raw >= 0;
+    const fadeT = easeInOutCubic(raw);
+    [['bg', s.bg], ['labelText', s.labelText], ['valueText', s.valueText], ['secondaryText', s.secondaryText]].forEach(([key, o]) => {
+      if (!o) return;
+      const off = s.offsets[key];
+      o.set({
+        left: s.anchor.x + off.dx * statCounterScale - offX, top: s.anchor.y + off.dy * statCounterScale - offY,
+        scaleX: statCounterScale, scaleY: statCounterScale,
+      });
+      o.setCoords();
+    });
+    [s.bg, s.labelText, s.secondaryText].forEach(o => { if (o) o.set({ opacity: visible ? Math.min(1, fadeT * 1.6) : 0 }); });
+    if (s.valueText) {
+      s.valueText.set({ opacity: visible ? Math.min(1, fadeT * 1.6) : 0 });
+      if (e.countUp && s.counterParts && visible) {
+        const val = clamp01(raw * 1.3) * s.counterParts.num; // count-up finishes a bit before the card's own fade window ends
+        const txt = s.counterParts.prefix + (s.counterParts.decimals ? val.toFixed(s.counterParts.decimals) : Math.round(val)) + s.counterParts.suffix + (e.unit ? ' ' + e.unit : '');
+        s.valueText.set('text', txt);
+      } else if (visible) {
+        s.valueText.set('text', s.finalValueText);
+      }
+    }
+  });
+}
+
+// ---- click-to-highlight: click a region on the canvas to add/remove a highlight event --
+// The map's own children are non-interactive (selectable:false/evented:false, same as
+// Dot-Grid/Pin/Org-Chart) so the whole group drags/resizes as one layer like any other —
+// clicking *through* to a specific region is handled here via real point-in-polygon
+// hit-testing against the same parsed geometry the rest of the system already trusts,
+// rather than relying on Fabric's group sub-target event quirks.
+let mapPenColor = COLORS.tealLight;
+// A click on an ALREADY-selected map layer is interpreted as "pick a region" (drag/resize
+// of the layer itself still works normally via the first click, which just selects it, the
+// same as any other layer) — converts the click to the group's own native coordinate space
+// via toLocalPoint() + the same groupOffset correction used for the moving route marker.
+canvas.on('mouse:down', (opt) => {
+  if (mode !== 'edit') return;
+  const obj = opt.target;
+  if (!obj || !obj.data || !obj.data.map) return;
+  if (canvas.getActiveObject() !== obj) return; // first click on a not-yet-selected map just selects it
+  const rt = obj.data.map._runtime;
+  if (!rt) return;
+  // Fabric v7 dropped the old Canvas#getPointer method (still exists as an internal
+  // fabric.util helper, but not as a public Canvas API) in favor of getScenePoint/
+  // getViewportPoint — getScenePoint is the direct replacement for getPointer's default
+  // (non-"absolute") behavior, i.e. canvas-space coordinates ignoring any viewport pan/zoom.
+  const pointer = canvas.getScenePoint(opt.e);
+  // Fabric v7 also dropped Object#toLocalPoint — invert the object's own scene-space
+  // transform matrix and apply it to the click point, which is what toLocalPoint did
+  // internally. The result is relative to the object's center, matching the old
+  // toLocalPoint(pointer, 'center', 'center') call this replaces.
+  const local = fabric.util.transformPoint(new fabric.Point(pointer.x, pointer.y), fabric.util.invertTransform(obj.calcTransformMatrix()));
+  const nativeX = local.x + rt.groupOffsetX, nativeY = local.y + rt.groupOffsetY;
+  const name = findRegionAtPoint(obj.data.map.scope, nativeX, nativeY);
+  if (!name) return;
+  toggleMapRegionHighlight(obj, name);
+});
+function toggleMapRegionHighlight(obj, regionName) {
+  const cfg = obj.data.map;
+  const events = cfg.events || [];
+  const existingIdx = events.findIndex(e => e.type === 'highlight' && e.region && e.region.toLowerCase() === regionName.toLowerCase());
+  let nextEvents;
+  if (existingIdx >= 0) {
+    nextEvents = events.filter((_, i) => i !== existingIdx);
+  } else {
+    const prevEnd = events.reduce((m, e) => Math.max(m, e.start + e.duration), 0);
+    const ev = MAP_EVENT_DEFAULTS.highlight();
+    ev.region = regionName; ev.color = mapPenColor; ev.start = events.length ? prevEnd + 150 : 0;
+    nextEvents = events.concat([ev]);
+  }
+  rebuildMap(obj, { events: nextEvents });
+  setStatus(`${nextEvents.length > events.length ? 'Highlighted' : 'Removed highlight from'} ${regionName}.`);
+}
+
+// ---- props panel: event-list editor ----------------------------------------------------
+function mapEventSummary(e) {
+  if (e.type === 'highlight') return `Highlight ${e.region || '(pick a region)'}`;
+  if (e.type === 'zoom') return `Zoom to ${e.region || '(pick a region)'}`;
+  if (e.type === 'route') return `Route ${e.from || '?'} → ${e.to || '?'}`;
+  if (e.type === 'stat') return `Stat: ${e.label || '(untitled)'}${e.value ? ' = ' + e.value : ''}`;
+  return e.type;
+}
+function renderMapEventTiming(container, e, obj, onAfterChange) {
+  const row = document.createElement('div'); row.className = 'row2'; container.appendChild(row);
+  const c1 = document.createElement('div'); row.appendChild(c1);
+  const l1 = document.createElement('label'); l1.textContent = 'Start (sec)'; l1.style.fontSize = '11px'; c1.appendChild(l1);
+  const i1 = document.createElement('input'); i1.type = 'number'; i1.step = '0.1'; i1.min = 0; i1.value = (e.start / 1000).toFixed(1);
+  i1.addEventListener('change', () => { e.start = Math.max(0, Math.round(parseFloat(i1.value) * 1000) || 0); onAfterChange(); });
+  c1.appendChild(i1);
+  const c2 = document.createElement('div'); row.appendChild(c2);
+  const l2 = document.createElement('label'); l2.textContent = 'Duration (sec)'; l2.style.fontSize = '11px'; c2.appendChild(l2);
+  const i2 = document.createElement('input'); i2.type = 'number'; i2.step = '0.1'; i2.min = 0.1; i2.value = (e.duration / 1000).toFixed(1);
+  i2.addEventListener('change', () => { e.duration = Math.max(100, Math.round(parseFloat(i2.value) * 1000) || e.duration); onAfterChange(); });
+  c2.appendChild(i2);
+}
+function renderMapEventList(body, obj) {
+  const cfg = obj.data.map;
+  const wrap = document.createElement('div'); wrap.id = 'mapEventsWrap'; body.appendChild(wrap);
+
+  function commit() { rebuildMap(obj, { events: cfg.events.slice() }); }
+
+  function paint() {
+    wrap.innerHTML = '';
+    cfg.events.forEach((e, idx) => {
+      const card = document.createElement('div'); card.className = 'source-box'; card.style.marginBottom = '8px'; wrap.appendChild(card);
+      const head = document.createElement('div'); head.style.display = 'flex'; head.style.alignItems = 'center'; head.style.gap = '6px'; card.appendChild(head);
+      const badge = document.createElement('span'); badge.className = 'badge-visual'; badge.style.background = COLORS.navy; badge.textContent = e.type.toUpperCase(); head.appendChild(badge);
+      const title = document.createElement('span'); title.style.flex = '1'; title.style.fontSize = '12px'; title.style.fontWeight = '700'; title.textContent = mapEventSummary(e); head.appendChild(title);
+      const upBtn = document.createElement('button'); upBtn.type = 'button'; upBtn.className = 'small ghost'; upBtn.textContent = '↑'; upBtn.disabled = idx === 0;
+      upBtn.addEventListener('click', () => { [cfg.events[idx - 1], cfg.events[idx]] = [cfg.events[idx], cfg.events[idx - 1]]; commit(); });
+      head.appendChild(upBtn);
+      const downBtn = document.createElement('button'); downBtn.type = 'button'; downBtn.className = 'small ghost'; downBtn.textContent = '↓'; downBtn.disabled = idx === cfg.events.length - 1;
+      downBtn.addEventListener('click', () => { [cfg.events[idx + 1], cfg.events[idx]] = [cfg.events[idx], cfg.events[idx + 1]]; commit(); });
+      head.appendChild(downBtn);
+      const rmBtn = document.createElement('button'); rmBtn.type = 'button'; rmBtn.className = 'small ghost'; rmBtn.textContent = '✕'; rmBtn.title = 'Remove event';
+      rmBtn.addEventListener('click', () => { cfg.events.splice(idx, 1); commit(); });
+      head.appendChild(rmBtn);
+
+      const body2 = document.createElement('div'); body2.style.marginTop = '8px'; card.appendChild(body2);
+      const regionNames = mapRegionsFor(cfg.scope).map(r => r.name).sort();
+      const makeRegionSelect = (value, onChange, allowNone) => {
+        const sel = document.createElement('select');
+        if (allowNone) { const o = document.createElement('option'); o.value = ''; o.textContent = '— choose —'; sel.appendChild(o); }
+        regionNames.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+        sel.value = value || '';
+        sel.addEventListener('change', () => { onChange(sel.value); commit(); });
+        return sel;
+      };
+      const makeSwatchRow = (value, onChange) => {
+        const row = document.createElement('div'); row.className = 'swatches';
+        SWATCH_OPTIONS.forEach(o => {
+          const s = document.createElement('div'); s.className = 'swatch' + (value === o.val ? ' active' : '');
+          s.style.background = o.val; s.title = o.name;
+          s.addEventListener('click', () => { onChange(o.val); commit(); });
+          row.appendChild(s);
+        });
+        return row;
+      };
+
+      if (e.type === 'highlight') {
+        const l1 = document.createElement('label'); l1.textContent = 'Region'; l1.style.fontSize = '11px'; body2.appendChild(l1);
+        body2.appendChild(makeRegionSelect(e.region, (v) => { e.region = v; }, true));
+        const l2 = document.createElement('label'); l2.textContent = 'Highlight color'; l2.style.fontSize = '11px'; l2.style.marginTop = '6px'; body2.appendChild(l2);
+        body2.appendChild(makeSwatchRow(e.color, (v) => { e.color = v; }));
+        const dimLbl = document.createElement('label'); dimLbl.style.fontSize = '11.5px'; dimLbl.style.marginTop = '6px'; dimLbl.style.display = 'flex'; dimLbl.style.alignItems = 'center'; dimLbl.style.gap = '6px';
+        const dimCb = document.createElement('input'); dimCb.type = 'checkbox'; dimCb.checked = e.dim !== false; dimCb.style.width = 'auto';
+        dimCb.addEventListener('change', () => { e.dim = dimCb.checked; commit(); });
+        dimLbl.appendChild(dimCb); dimLbl.appendChild(document.createTextNode('Dim other regions while this is highlighted'));
+        body2.appendChild(dimLbl);
+      } else if (e.type === 'zoom') {
+        const l1 = document.createElement('label'); l1.textContent = 'Zoom to region'; l1.style.fontSize = '11px'; body2.appendChild(l1);
+        body2.appendChild(makeRegionSelect(e.region, (v) => { e.region = v; }, true));
+        const l2 = document.createElement('label'); l2.textContent = 'Padding around region'; l2.style.fontSize = '11px'; l2.style.marginTop = '6px'; body2.appendChild(l2);
+        const padSel = document.createElement('select');
+        [['0.35', 'Loose'], ['0.22', 'Comfortable'], ['0.1', 'Tight']].forEach(([v, label]) => { const o = document.createElement('option'); o.value = v; o.textContent = label; padSel.appendChild(o); });
+        padSel.value = String(e.padding != null ? e.padding : 0.22);
+        padSel.addEventListener('change', () => { e.padding = parseFloat(padSel.value); commit(); });
+        body2.appendChild(padSel);
+      } else if (e.type === 'route') {
+        const row1 = document.createElement('div'); row1.className = 'row2'; body2.appendChild(row1);
+        const fw = document.createElement('div'); const fl = document.createElement('label'); fl.textContent = 'From'; fl.style.fontSize = '11px'; fw.appendChild(fl); fw.appendChild(makeRegionSelect(e.from, (v) => { e.from = v; }, true)); row1.appendChild(fw);
+        const tw = document.createElement('div'); const tl = document.createElement('label'); tl.textContent = 'To'; tl.style.fontSize = '11px'; tw.appendChild(tl); tw.appendChild(makeRegionSelect(e.to, (v) => { e.to = v; }, true)); row1.appendChild(tw);
+
+        const l2 = document.createElement('label'); l2.textContent = 'Style'; l2.style.fontSize = '11px'; l2.style.marginTop = '6px'; body2.appendChild(l2);
+        const styleRow = document.createElement('div'); styleRow.className = 'row2'; body2.appendChild(styleRow);
+        [['line', 'Line'], ['arrow', 'Arrow'], ['flight', 'Flight']].forEach(([v, label]) => {
+          const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
+          b.className = 'small' + (e.style === v ? ' primary' : ' ghost'); b.textContent = label;
+          b.addEventListener('click', () => {
+            e.style = v;
+            e.movingObject = v === 'flight' ? 'plane' : v === 'arrow' ? 'arrow' : 'none';
+            e.curve = v === 'flight' ? 'medium' : e.curve;
+            commit();
+          });
+          styleRow.appendChild(b);
+        });
+
+        const l3 = document.createElement('label'); l3.textContent = 'Curve'; l3.style.fontSize = '11px'; l3.style.marginTop = '6px'; body2.appendChild(l3);
+        const curveSel = document.createElement('select');
+        ['straight', 'low', 'medium', 'high'].forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v[0].toUpperCase() + v.slice(1); curveSel.appendChild(o); });
+        curveSel.value = e.curve || 'medium';
+        curveSel.addEventListener('change', () => { e.curve = curveSel.value; commit(); });
+        body2.appendChild(curveSel);
+
+        const l4 = document.createElement('label'); l4.textContent = 'Route color'; l4.style.fontSize = '11px'; l4.style.marginTop = '6px'; body2.appendChild(l4);
+        body2.appendChild(makeSwatchRow(e.color, (v) => { e.color = v; }));
+      } else if (e.type === 'stat') {
+        const l1 = document.createElement('label'); l1.textContent = 'Label'; l1.style.fontSize = '11px'; body2.appendChild(l1);
+        const inpLabel = document.createElement('input'); inpLabel.type = 'text'; inpLabel.value = e.label || ''; inpLabel.placeholder = 'Population';
+        inpLabel.addEventListener('change', () => { e.label = inpLabel.value; commit(); });
+        body2.appendChild(inpLabel);
+        const row2 = document.createElement('div'); row2.className = 'row2'; row2.style.marginTop = '6px'; body2.appendChild(row2);
+        const vw = document.createElement('div'); const vl = document.createElement('label'); vl.textContent = 'Value'; vl.style.fontSize = '11px'; vw.appendChild(vl);
+        const inpVal = document.createElement('input'); inpVal.type = 'text'; inpVal.value = e.value || ''; inpVal.placeholder = '5.0M'; inpVal.addEventListener('change', () => { e.value = inpVal.value; commit(); }); vw.appendChild(inpVal); row2.appendChild(vw);
+        const uw = document.createElement('div'); const ul = document.createElement('label'); ul.textContent = 'Unit (optional)'; ul.style.fontSize = '11px'; uw.appendChild(ul);
+        const inpUnit = document.createElement('input'); inpUnit.type = 'text'; inpUnit.value = e.unit || ''; inpUnit.placeholder = 'people'; inpUnit.addEventListener('change', () => { e.unit = inpUnit.value; commit(); }); uw.appendChild(inpUnit); row2.appendChild(uw);
+        const l3 = document.createElement('label'); l3.textContent = 'Secondary line (optional)'; l3.style.fontSize = '11px'; l3.style.marginTop = '6px'; body2.appendChild(l3);
+        const inpSec = document.createElement('input'); inpSec.type = 'text'; inpSec.value = e.secondary || ''; inpSec.placeholder = '↑ 12.4% vs last year';
+        inpSec.addEventListener('change', () => { e.secondary = inpSec.value; commit(); });
+        body2.appendChild(inpSec);
+        const l4 = document.createElement('label'); l4.textContent = 'Anchor to region (optional — otherwise shown at the bottom of the map)'; l4.style.fontSize = '11px'; l4.style.marginTop = '6px'; body2.appendChild(l4);
+        body2.appendChild(makeRegionSelect(e.region, (v) => { e.region = v; }, true));
+        const cuLbl = document.createElement('label'); cuLbl.style.fontSize = '11.5px'; cuLbl.style.marginTop = '6px'; cuLbl.style.display = 'flex'; cuLbl.style.alignItems = 'center'; cuLbl.style.gap = '6px';
+        const cuCb = document.createElement('input'); cuCb.type = 'checkbox'; cuCb.checked = e.countUp !== false; cuCb.style.width = 'auto';
+        cuCb.addEventListener('change', () => { e.countUp = cuCb.checked; commit(); });
+        cuLbl.appendChild(cuCb); cuLbl.appendChild(document.createTextNode('Count up to the value (numbers only)'));
+        body2.appendChild(cuLbl);
+      }
+
+      renderMapEventTiming(body2, e, obj, commit);
+    });
+
+    const addRow = document.createElement('div'); addRow.className = 'add-row'; addRow.style.marginTop = '4px'; wrap.appendChild(addRow);
+    [['highlight', '+ Highlight'], ['zoom', '+ Zoom'], ['route', '+ Route'], ['stat', '+ Statistic']].forEach(([type, label]) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'small'; b.textContent = label;
+      b.addEventListener('click', () => {
+        const prevEnd = cfg.events.reduce((m, e) => Math.max(m, e.start + e.duration), 0);
+        const ev = MAP_EVENT_DEFAULTS[type]();
+        ev.start = cfg.events.length ? prevEnd + 150 : 0;
+        cfg.events = cfg.events.concat([ev]);
+        commit();
+      });
+      addRow.appendChild(b);
+    });
+  }
+  paint();
+}
+
+function renderMapPropsPanel(body, obj) {
+  const cfg = obj.data.map;
+  const lblSc = document.createElement('label'); lblSc.textContent = 'Map'; body.appendChild(lblSc);
+  const scRow = document.createElement('div'); scRow.className = 'row2'; body.appendChild(scRow);
+  [{ v: 'world', label: 'World' }, { v: 'japan', label: 'Japan prefectures' }].forEach(s => {
+    const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
+    b.className = 'small' + (cfg.scope === s.v ? ' primary' : ' ghost');
+    b.textContent = s.label;
+    b.addEventListener('click', () => { if (cfg.scope !== s.v) rebuildMap(obj, { scope: s.v, events: [] }); });
+    scRow.appendChild(b);
+  });
+
+  const lblPen = document.createElement('label'); lblPen.textContent = 'Pen color — used when you click a region directly on the map'; lblPen.style.marginTop = '8px'; body.appendChild(lblPen);
+  const penRow = document.createElement('div'); penRow.className = 'swatches'; body.appendChild(penRow);
+  SWATCH_OPTIONS.forEach(o => {
+    const s = document.createElement('div'); s.className = 'swatch' + (mapPenColor === o.val ? ' active' : '');
+    s.style.background = o.val; s.title = o.name;
+    s.addEventListener('click', () => { mapPenColor = o.val; penRow.querySelectorAll('.swatch').forEach(el => el.classList.remove('active')); s.classList.add('active'); });
+    penRow.appendChild(s);
+  });
+  const clickNote = document.createElement('div'); clickNote.className = 'empty-note'; clickNote.style.marginTop = '4px';
+  clickNote.textContent = 'This layer is already selected, so clicking a region on the canvas toggles a Highlight event for it — click again to remove.';
+  body.appendChild(clickNote);
+
+  const div1 = document.createElement('div'); div1.className = 'divider'; body.appendChild(div1);
+  const lblEv = document.createElement('label'); lblEv.textContent = 'Timeline — what happens, and when'; body.appendChild(lblEv);
+  renderMapEventList(body, obj);
+
+  const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop = '8px';
+  note.textContent = cfg.scope === 'japan'
+    ? 'Region-level only (all 47 prefectures) — for a specific city like Kamakura, use the Map/Location Pin marker over a background map image instead.'
+    : 'Country-level only — switch to Japan prefectures for regional detail within Japan.';
+  body.appendChild(note);
+}
 /* ---- Org/Family Tree: parses a plain indented-text outline (2 spaces = one level     ---- */
 /* ---- deeper) into a tree, lays it out with each parent centered above its children    ---- */
 /* ---- (classic leaf-counting layout — not the most compact possible, but simple and    ---- */
@@ -1611,34 +2332,60 @@ const TEMPLATES = {
       const mapScale = Math.min(W*0.8/960, H*0.55/500);
       return [
         T("WHERE THIS FITS ON THE MAP", { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-        M({ name:'World map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'world', highlights:[{name:'Japan',color:COLORS.tealLight}], routeFrom:'', routeTo:'', routeColor:COLORS.amberLight, scale:mapScale, anim:{type:'fade',delay:600,duration:900} }),
+        M({ name:'World map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'world', scale:mapScale, anim:{type:'fade',delay:600,duration:900}, events:[
+          { type:'highlight', id:'e1', region:'Japan', color:COLORS.tealLight, start:500, duration:700, dim:true },
+        ] }),
         T('Japan', { name:'Caption', role:'display', fontWeight:700, fontSize:38, fill:'#FFFFFF', left:cx, top:H*0.9, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1400,duration:500} }),
       ];
     },
   },
   mapJapanRegion: {
-    label: 'Map: Japan Region Highlight',
+    label: 'Map: Region Highlight + Zoom + Stat',
     category: 'Maps',
     layers: () => {
       const cx = W/2, rel = W/1920;
       const mapScale = Math.min(W*0.75/600, H*0.6/650);
       return [
         T('A CLOSER LOOK', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-        M({ name:'Japan map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'japan', highlights:[{name:'Kanagawa',color:COLORS.amberLight},{name:'Tōkyō',color:'rgba(255,255,255,0.3)'}], routeFrom:'', routeTo:'', routeColor:COLORS.amberLight, scale:mapScale, anim:{type:'fade',delay:600,duration:900} }),
-        T('Kanagawa Prefecture', { name:'Caption', role:'display', fontWeight:700, fontSize:38, fill:'#FFFFFF', left:cx, top:H*0.92, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1400,duration:500} }),
+        M({ name:'Japan map', left:cx, top:H*0.55, originX:'center', originY:'center', scope:'japan', scale:mapScale, anim:{type:'fade',delay:500,duration:800}, events:[
+          { type:'highlight', id:'e1', region:'Kanagawa', color:COLORS.amberLight, start:400, duration:700, dim:true },
+          { type:'zoom', id:'e2', region:'Kanagawa', padding:0.28, start:1300, duration:1400 },
+          { type:'stat', id:'e3', region:'Kanagawa', label:'Population', value:'9.2', unit:'million', countUp:true, start:2900, duration:900 },
+        ] }),
       ];
     },
   },
-  mapRoute: {
-    label: 'Map: Route Between Two Places',
+  mapFlight: {
+    label: 'Map: Flight Route + Arrival Zoom',
     category: 'Maps',
     layers: () => {
       const cx = W/2, rel = W/1920;
       const mapScale = Math.min(W*0.75/600, H*0.6/650);
       return [
-        T('TWO CITIES, ONE COMPARISON', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
-        M({ name:'Japan route map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'japan', highlights:[{name:'Tōkyō',color:COLORS.tealLight},{name:'Ōsaka',color:COLORS.amberLight}], routeFrom:'Tōkyō', routeTo:'Ōsaka', routeColor:'#FFFFFF', scale:mapScale, anim:{type:'fade',delay:600,duration:900} }),
-        T('Tokyo vs Osaka', { name:'Caption', role:'display', fontWeight:700, fontSize:38, fill:'#FFFFFF', left:cx, top:H*0.92, width:1400*rel, originX:'center', textAlign:'center', anim:{type:'fade',delay:1400,duration:500} }),
+        T('WHERE WE ARE HEADED', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        M({ name:'Japan flight map', left:cx, top:H*0.55, originX:'center', originY:'center', scope:'japan', scale:mapScale, anim:{type:'fade',delay:500,duration:800}, events:[
+          { type:'highlight', id:'e0', region:'Tōkyō', color:COLORS.tealLight, start:300, duration:500, dim:false },
+          { type:'route', id:'e1', from:'Tōkyō', to:'Hokkaidō', style:'flight', movingObject:'plane', curve:'medium', color:COLORS.amberLight, showTrail:true, start:1000, duration:2200 },
+          { type:'highlight', id:'e2', region:'Hokkaidō', color:COLORS.tealLight, start:3200, duration:600, dim:true },
+          { type:'zoom', id:'e3', region:'Hokkaidō', padding:0.28, start:3700, duration:1400 },
+          { type:'stat', id:'e4', region:'Hokkaidō', label:'Population', value:'5.0', unit:'million', countUp:true, start:5300, duration:900 },
+        ] }),
+      ];
+    },
+  },
+  mapHighlightRoute: {
+    label: 'Map: Highlight Then Route Onward',
+    category: 'Maps',
+    layers: () => {
+      const cx = W/2, rel = W/1920;
+      const mapScale = Math.min(W*0.75/600, H*0.6/650);
+      return [
+        T('TWO PLACES, ONE STORY', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:28, fill:COLORS.tealLight, left:cx, top:130, width:1500*rel, textAlign:'center', originX:'center', charSpacing:280, anim:{type:'fade',delay:300,duration:600} }),
+        M({ name:'Japan route map', left:cx, top:H*0.58, originX:'center', originY:'center', scope:'japan', scale:mapScale, anim:{type:'fade',delay:500,duration:800}, events:[
+          { type:'highlight', id:'e1', region:'Ōsaka', color:COLORS.tealLight, start:400, duration:700, dim:true },
+          { type:'route', id:'e2', from:'Ōsaka', to:'Hiroshima', style:'arrow', movingObject:'arrow', curve:'medium', color:COLORS.amberLight, showTrail:true, start:1500, duration:1600 },
+          { type:'highlight', id:'e3', region:'Hiroshima', color:COLORS.amberLight, start:3100, duration:600, dim:true },
+        ] }),
       ];
     },
   },
@@ -1678,8 +2425,16 @@ function specToObject(spec) {
     obj = buildOrgChartGroup(spec.text, spec.color);
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
   } else if (spec.kind === 'map') {
-    obj = buildMapGroup(spec.scope, spec.highlights, spec.routeFrom, spec.routeTo, spec.routeColor);
+    var mapCfg = migrateMapConfig({
+      scope: spec.scope === 'japan' ? 'japan' : 'world',
+      events: spec.events || null,
+      highlights: spec.highlights, routeFrom: spec.routeFrom, routeTo: spec.routeTo, routeColor: spec.routeColor,
+    });
+    const built = buildMapGroup(mapCfg.scope, mapCfg.events);
+    obj = built.group;
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top', scaleX: spec.scale || 1, scaleY: spec.scale || 1 });
+    mapCfg._runtime = built.runtime;
+    mapCfg.baseTransform = { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY };
   }
   obj.set('name', spec.name || spec.kind);
   obj.data = {
@@ -1697,11 +2452,7 @@ function specToObject(spec) {
     obj.data.orgchart = { text: spec.text || '', color: spec.color || COLORS.tealLight };
   }
   if (spec.kind === 'map') {
-    obj.data.map = {
-      scope: spec.scope === 'japan' ? 'japan' : 'world',
-      highlights: spec.highlights || [],
-      routeFrom: spec.routeFrom || '', routeTo: spec.routeTo || '', routeColor: spec.routeColor || COLORS.amberLight,
-    };
+    obj.data.map = mapCfg;
   }
   return obj;
 }
@@ -2005,74 +2756,7 @@ function selectProps(obj) {
     note.textContent = 'A location marker for pointing at a spot on a map image or photo — drop your map in as background media, then drag this into place.';
     body.appendChild(note);
   } else if (obj.data.map) {
-    const mp = obj.data.map;
-    const lblSc = document.createElement('label'); lblSc.textContent = 'Map'; body.appendChild(lblSc);
-    const scRow = document.createElement('div'); scRow.className = 'row2'; body.appendChild(scRow);
-    [{v:'world',label:'World'},{v:'japan',label:'Japan prefectures'}].forEach(s => {
-      const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
-      b.className = 'small' + (mp.scope === s.v ? ' primary' : ' ghost');
-      b.textContent = s.label;
-      b.addEventListener('click', () => { if (mp.scope !== s.v) rebuildMap(obj, { scope: s.v, highlights: [], routeFrom: '', routeTo: '' }); });
-      scRow.appendChild(b);
-    });
-
-    const regionNames = mapRegionsFor(mp.scope).map(r => r.name).sort();
-
-    const lblAdd = document.createElement('label'); lblAdd.textContent = 'Highlight a region — pick it, then click a color'; body.appendChild(lblAdd);
-    const selAdd = document.createElement('select'); regionNames.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; selAdd.appendChild(o); }); body.appendChild(selAdd);
-    const swAdd = document.createElement('div'); swAdd.className = 'swatches'; swAdd.style.marginTop = '6px'; body.appendChild(swAdd);
-    SWATCH_OPTIONS.forEach(o => {
-      const s = document.createElement('div'); s.className = 'swatch';
-      s.style.background = o.val; s.title = `Highlight ${selAdd.value || ''} in ${o.name}`;
-      s.addEventListener('click', () => {
-        const name = selAdd.value; if (!name) return;
-        const next = mp.highlights.filter(h => h.name.toLowerCase() !== name.toLowerCase());
-        next.push({ name, color: o.val });
-        rebuildMap(obj, { highlights: next });
-      });
-      swAdd.appendChild(s);
-    });
-
-    if (mp.highlights.length) {
-      const chipsWrap = document.createElement('div'); chipsWrap.style.marginTop = '8px'; body.appendChild(chipsWrap);
-      mp.highlights.forEach(h => {
-        const chip = document.createElement('span'); chip.className = 'asset-chip';
-        chip.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${h.color};"></span> ${h.name} `;
-        const rm = document.createElement('button'); rm.type = 'button'; rm.textContent = '✕'; rm.title = 'Remove highlight';
-        rm.addEventListener('click', () => rebuildMap(obj, { highlights: mp.highlights.filter(x => x !== h) }));
-        chip.appendChild(rm);
-        chipsWrap.appendChild(chip);
-      });
-    }
-
-    const div2 = document.createElement('div'); div2.className = 'divider'; body.appendChild(div2);
-    const lblRoute = document.createElement('label'); lblRoute.textContent = 'Route arrow between two regions (optional)'; body.appendChild(lblRoute);
-    const routeRow = document.createElement('div'); routeRow.className = 'row2'; body.appendChild(routeRow);
-    const selFrom = document.createElement('select'); const selTo = document.createElement('select');
-    [selFrom, selTo].forEach(sel => {
-      const none = document.createElement('option'); none.value = ''; none.textContent = '— none —'; sel.appendChild(none);
-      regionNames.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
-    });
-    selFrom.value = mp.routeFrom; selTo.value = mp.routeTo;
-    selFrom.addEventListener('change', () => rebuildMap(obj, { routeFrom: selFrom.value }));
-    selTo.addEventListener('change', () => rebuildMap(obj, { routeTo: selTo.value }));
-    const fromWrap = document.createElement('div'); const fromLbl = document.createElement('label'); fromLbl.textContent = 'From'; fromLbl.style.fontSize='11px'; fromWrap.appendChild(fromLbl); fromWrap.appendChild(selFrom); routeRow.appendChild(fromWrap);
-    const toWrap = document.createElement('div'); const toLbl = document.createElement('label'); toLbl.textContent = 'To'; toLbl.style.fontSize='11px'; toWrap.appendChild(toLbl); toWrap.appendChild(selTo); routeRow.appendChild(toWrap);
-
-    const lblRc = document.createElement('label'); lblRc.textContent = 'Route color'; body.appendChild(lblRc);
-    const swRc = document.createElement('div'); swRc.className = 'swatches'; body.appendChild(swRc);
-    SWATCH_OPTIONS.forEach(o => {
-      const s = document.createElement('div'); s.className = 'swatch' + (mp.routeColor === o.val ? ' active' : '');
-      s.style.background = o.val; s.title = o.name;
-      s.addEventListener('click', () => rebuildMap(obj, { routeColor: o.val }));
-      swRc.appendChild(s);
-    });
-
-    const note = document.createElement('div'); note.className = 'empty-note'; note.style.marginTop = '8px';
-    note.textContent = mp.scope === 'japan'
-      ? 'Region-level only (all 47 prefectures) — for a specific city like Kamakura, use the Map/Location Pin marker over a background map image instead.'
-      : 'Country-level only — switch to Japan prefectures for regional detail within Japan.';
-    body.appendChild(note);
+    renderMapPropsPanel(body, obj);
   } else if (obj.data.orgchart) {
     const oc = obj.data.orgchart;
     const lblT = document.createElement('label'); lblT.textContent = 'Names, one per line'; body.appendChild(lblT);
@@ -2193,7 +2877,9 @@ document.getElementById('addOrgChart').addEventListener('click', () => {
   canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
 });
 document.getElementById('addMap').addEventListener('click', () => {
-  const obj = specToObject(M({ name:'Map', left:W/2, top:H/2, originX:'center', originY:'center', scope:'world', highlights:[{name:'Japan',color:COLORS.tealLight}], routeFrom:'', routeTo:'', routeColor:COLORS.amberLight, anim:{type:'fade',delay:0,duration:600} }));
+  const obj = specToObject(M({ name:'Map', left:W/2, top:H/2, originX:'center', originY:'center', scope:'world', anim:{type:'fade',delay:0,duration:600}, events:[
+    { type:'highlight', id:newMapEventId(), region:'Japan', color:COLORS.tealLight, start:300, duration:700, dim:true },
+  ] }));
   canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll();
 });
 
@@ -2426,7 +3112,10 @@ function captureBaseState() {
 }
 function restoreBaseState() {
   canvas.getObjects().forEach(o => {
-    if (o === bgMediaObj || !o.data) return;
+    // A layer that never went through captureBaseState() (e.g. the "Edit" tab clicked
+    // redundantly on a freshly loaded template, with no preceding Play/scrub) has no
+    // base* fields yet — applying them anyway would blank out left/top/scale/opacity.
+    if (o === bgMediaObj || !o.data || o.data.baseLeft === undefined) return;
     o.set({ left:o.data.baseLeft, top:o.data.baseTop, scaleX:o.data.baseScaleX, scaleY:o.data.baseScaleY, opacity:o.data.baseOpacity });
     if (o.type === 'textbox' && o.data.baseText != null) o.set('text', o.data.baseText);
   });
@@ -2437,6 +3126,12 @@ function computeContentEnd() {
   canvas.getObjects().forEach(o => {
     if (o === bgMediaObj || !o.data || !o.data.anim || o.data.anim.type === 'none') return;
     end = Math.max(end, o.data.anim.delay + o.data.anim.duration);
+    // A Map Graphic's own events (highlight/zoom/route/stat) run on a sub-timeline offset
+    // by the map layer's own entrance delay (see applyMapTimeline's caller in applyFrame) —
+    // without this, Preview/Record can cut off mid-sequence before a late stat/zoom plays.
+    if (o.data.map && o.data.map.events && o.data.map.events.length) {
+      o.data.map.events.forEach(e => { end = Math.max(end, o.data.anim.delay + e.start + e.duration); });
+    }
   });
   return end + 300;
 }
@@ -2490,6 +3185,15 @@ function applyFrame(elapsed) {
       o.set({ opacity: base.baseOpacity, left: base.baseLeft, top: base.baseTop, scaleX: base.baseScaleX, scaleY: base.baseScaleY });
       if (a.type === 'countup' && base.counterParts) o.set('text', base.baseText);
     }
+  });
+  // Second pass, after every object has settled into its own base entrance state above: a
+  // Map Graphic's internal events (highlight/zoom/route/stat) run on their own sub-timeline,
+  // timed relative to the map's own entrance delay, layered on top rather than fused into
+  // the whole-group fade/pop handled by the loop above.
+  canvas.getObjects().forEach(o => {
+    if (o === bgMediaObj || !o.data || !o.data.map) return;
+    const delay = (o.data.anim && o.data.anim.delay) || 0;
+    applyMapTimeline(o, elapsed - delay);
   });
   canvas.requestRenderAll();
 }

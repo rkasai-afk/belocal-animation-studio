@@ -112,11 +112,17 @@ tests/test_v13.js             Playwright regression: the Vertical-only safe-zone
                                zone" button re-nudging a layer dragged back in, and a recorded
                                WebM's decoded pixels confirming the guide is never baked into
                                output
-tests/test_v14.js             Playwright regression: Map Graphic layer (quick-add default,
-                               scope switching, highlight add/remove via dropdown+swatch,
-                               route arrow between two regions, the three Map starter
-                               templates checked for overflow across all 3 aspect ratios like
-                               test_v5's pattern, save/load round-trip)
+tests/test_v14.js             Playwright regression: Map Graphic's events-based animation
+                               system (quick-add default, scope switching, click-to-highlight
+                               toggle via a real canvas click, highlight animating from its
+                               neutral base color rather than appearing pre-highlighted, route
+                               arrowhead direction sanity across three compass directions,
+                               camera zoom capped at MAX_CAMERA_ZOOM, the flagship flight
+                               sequence's marker/camera/stat arrival, stat-card containment
+                               checked on both a large region and a tiny one, the redundant
+                               Edit-tab-click regression, the four Map starter templates
+                               checked for overflow across all 3 aspect ratios like test_v5's
+                               pattern, save/load round-trip of the full events array)
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -197,6 +203,19 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   `fabric.Polygon` from explicit points rather than rotating a primitive — verify by
   comparing the parent group's rendered bounding-box height before/after adding the shape,
   not by eyeballing a screenshot at normal zoom (an 8-10px difference is easy to miss).
+- **`restoreBaseState()` must skip any layer whose `data.baseLeft` was never captured.**
+  `captureBaseState()` (called from `startPlayback()`) is what records each layer's pre-
+  animation `left`/`top`/`scaleX`/`scaleY`/`opacity` onto `data.base*`; `restoreBaseState()`
+  (called from `backToEdit()`, which both `#modeEdit` and `#btnStop` call unconditionally on
+  every click) blindly applies those `data.base*` fields back. If `backToEdit()` runs before
+  `captureBaseState()` ever has — e.g. a user clicks the "Edit" tab redundantly right after
+  loading a template, with nothing yet played — every layer's `data.base*` fields are still
+  `undefined`, and `restoreBaseState()` wipes `left`/`top`/`scaleX`/`scaleY` to `undefined` on
+  every object in the scene. This doesn't throw where it happens; the canvas just silently goes
+  blank, and only surfaces later as a wall of `drawImage: ... canvas element with a width or
+  height of 0` errors on the *next* Preview/Record, once Fabric tries to cache-render an object
+  with `NaN` dimensions — a confusing, delayed symptom that looks unrelated to its actual
+  cause. `restoreBaseState()` now guards with `o.data.baseLeft === undefined` before applying.
 - **In Playwright tests, don't pair `ElementHandle.fill()` with an explicit
   `dispatchEvent('change')`** on a control wired to a rebuild-in-place pattern (Dot-Grid,
   Map Pin). Together they can fire the change handler twice; the second call lands on a
@@ -265,21 +284,63 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   object's absolute `getBoundingRect(true, true)` and translating via `left`/`top` deltas —
   this is safe under rotation/scale because translating an object's origin point shifts its
   whole rendered bounding box by the same delta, regardless of its own transform.
-- **Map Graphic** (`buildMapGroup()`/`rebuildMap()`, `src/map_data.js`) renders illustrated
-  country or Japan-prefecture outlines from vendored SVG path data — real geographic
-  boundaries, but static vector data rather than live tiles, so (unlike the Map/Location Pin
-  above) it needs zero network requests and still fits this project's single-file
-  architecture. Regions are matched by exact name (case-insensitive) against
+- **Map Graphic** (`buildMapGroup()`/`rebuildMap()`/`applyMapTimeline()`, `src/map_data.js`)
+  renders illustrated country or Japan-prefecture outlines from vendored SVG path data — real
+  geographic boundaries, but static vector data rather than live tiles, so (unlike the
+  Map/Location Pin above) it needs zero network requests and still fits this project's
+  single-file architecture. Regions are matched by exact name (case-insensitive) against
   `WORLD_MAP_DATA.countries`/`JAPAN_MAP_DATA.prefectures` — the props panel only ever offers
-  names from a `<select>`, so a typo can't silently fail to highlight anything. A region's
-  centroid for the optional route arrow is read from its `fabric.Path`'s own bounding box
-  (`path.left + path.width/2`, before grouping) — this works because every path in one scope
-  shares one coordinate system, and `fabric.Group`'s constructor is what normalizes
-  everything to be relative to the group's own bounding box afterward, the same mechanic
-  Dot-Grid's absolute-pixel-then-group approach already relies on. Follows the exact
+  names from a `<select>`, so a typo can't silently fail to highlight anything. The layer's
+  config is `data.map = {scope, events[], baseTransform, _runtime}` — an ordered list of
+  `highlight`/`zoom`/`route`/`stat` events, each with its own `start`/`duration`, is the map's
+  own sub-timeline, played by `applyMapTimeline()` as a second pass inside `applyFrame()` after
+  the normal per-layer fade/pop/slide pass (so a map's entrance animation and its internal
+  story beats are independent, not fused into one hard-coded sequence). `migrateMapConfig()`
+  synthesizes an equivalent `events[]` from the old flat `highlights`/`routeFrom`/`routeTo`
+  shape so older saved projects still load. A region's centroid/bounds — used for the route
+  anchor, the camera zoom target, and the stat card anchor alike — is `regionAnchor()`'s
+  largest-subpath-by-shoelace-area centroid, **not** a raw bounding-box center: several
+  prefectures/countries include far-flung islands or get split at the antimeridian, which
+  drags a naive bbox-center miles from the actual landmass. `regionAnchor()` caches by
+  `scope|name` in `_regionAnchorCache` — when editing this function, the `best` candidate
+  object it keeps across iterations MUST carry `area` alongside `x`/`y`/`bounds`, or the
+  `c.area > best.area` comparison silently becomes `c.area > undefined` (always false) after
+  the first subpath, degrading it to "whichever subpath appears first in the path string"
+  instead of "largest" — this exact regression once made every zoom/route/stat anchor land on
+  a stray island or coastline fragment instead of the real landmass, with no error or crash to
+  flag it, only wrong-looking geometry. The camera (`computeCameraTarget()`/
+  `applyCameraState()`) scales/pans the whole map `fabric.Group` as one transform — never
+  individual children — which is what keeps regions/routes/markers/stat cards geometrically
+  coherent through a zoom, and is capped at `MAX_CAMERA_ZOOM` (currently 6x) so a tiny region
+  (a prefecture can be 1/15th the width of the whole Japan map) doesn't produce a jarring,
+  un-cinematic lurch. A stat card is deliberately **map-space positioned but screen-space
+  sized**: its shapes are ordinary children of the map group (so the card tracks its region
+  through a camera move), but `applyMapTimeline()` counter-scales them by
+  `1/camScaleMultiplier` every frame and repositions them as `anchor + baseOffset*counterScale`
+  (offsets recorded once at build time in `buildStatCard()`'s returned `offsets` map) — without
+  this, the card's on-screen size and its distance from the region it annotates would both
+  balloon with camera zoom, the same way a map marker icon shouldn't grow as you zoom a slippy
+  map. Every shape `buildStatCard()` constructs must set `originX`/`originY` explicitly
+  (`'left'`/`'top'`, matching the `left`/`top` values used to position it) — a plain
+  `new fabric.Rect({left, top, ...})` with no origin defaults to **center** origin in this
+  vendored Fabric v7 build, so a background card built that way renders centered on `(left,
+  top)` while text built with explicit `originX:'left'` renders with `(left,top)` as its
+  corner, silently misaligning the two even though their local coordinates look consistent on
+  paper — always screenshot a real render at the actual (non-1x) camera scale the card will
+  appear at, not just inspect the constructor args, since the two origins agree exactly at a
+  scale of 1 and only visibly diverge once zoomed. Click-to-highlight
+  (`canvas.on('mouse:down', ...)`) hit-tests via `findRegionAtPoint()` (ray-casting against
+  each region's subpaths) rather than Fabric's own event targeting, converting the click with
+  `canvas.getScenePoint(e)` and `fabric.util.transformPoint(pt, fabric.util.invertTransform(
+  obj.calcTransformMatrix()))` — **not** `canvas.getPointer()`/`object.toLocalPoint()`, both of
+  which this vendored Fabric v7 build has removed entirely (calling either throws
+  `TypeError: ... is not a function`, silently breaking every click on a selected map with no
+  visible symptom beyond "clicking a region does nothing"); double-check any *new* pointer/
+  coordinate code against what's actually exported from `src/fabric.min.js`, since Fabric's own
+  migration guides and search-engine answers still describe the pre-v7 API. Follows the exact
   regenerate-in-place pattern as Dot-Grid/Pin/Org-Chart above — switching scope resets
-  highlights/route (prefecture and country names don't overlap), and dragging/resizing the
-  whole group works like any other layer via `scaleX`/`scaleY`.
+  `events` (prefecture and country names don't overlap), and dragging/resizing the whole group
+  works like any other layer via `scaleX`/`scaleY`.
 - **Custom font import** registers via the `FontFace` API (`registerCustomFont`) and is
   persisted into saved `.json` projects as base64 data URLs (`customFonts` array) so a
   reloaded project re-registers the same fonts before enlivening objects.
