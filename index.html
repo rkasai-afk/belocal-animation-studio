@@ -1165,8 +1165,28 @@ function rebuildPin(obj, patch) {
    the animation always lands exactly on the static look, never a mismatched "pop".
    ================================================================================ */
 
+// ---- geographic dataset registry -------------------------------------------------------
+// GeographicDataset: {id, label, kind:'modern'|'historical', features: GeographicFeature[]}.
+// GeographicFeature: whatever a dataset's source data already shapes its entries as — for the
+// two vendored datasets below, {id, name, kanji?, region?, path}. Nothing downstream (
+// regionAnchor/computeCameraTarget/findRegionAtPoint/buildMapGroup/statAnchorPoint/the map
+// event control manifest) reads anything beyond `.name` and `.path` — they operate on "a named
+// region with an SVG path" generically, never assuming "prefecture" or "country" specifically.
+// That's what makes this a real extension point rather than a relabeling: a future historical
+// dataset (`GEOGRAPHIC_DATASETS['historical-sengoku'] = {kind:'historical', features:[...]}`)
+// slots in without touching any engine function, PROVIDED its features are shaped the same way.
+// A feature MAY carry an optional `meta` object for provenance a modern prefecture doesn't need
+// (`dateStart`/`dateEnd`/`controller`/`disputed`/`approximate`/`source`/`confidence`) — nothing
+// here requires it, reads it, or renders it; it's reserved space for whenever a historical
+// dataset actually exists (see CLAUDE.md's "Historical map layer" note for why none is vendored
+// yet — no rendering or UI work is worth doing before a real, sourced dataset is in hand).
+const GEOGRAPHIC_DATASETS = {
+  world: { id: 'world', label: 'World', kind: 'modern', get features() { return WORLD_MAP_DATA.countries; } },
+  japan: { id: 'japan', label: 'Japan prefectures', kind: 'modern', get features() { return JAPAN_MAP_DATA.prefectures; } },
+};
+function normalizeMapScope(scope) { return GEOGRAPHIC_DATASETS[scope] ? scope : 'world'; }
 function mapRegionsFor(scope) {
-  return scope === 'japan' ? JAPAN_MAP_DATA.prefectures : WORLD_MAP_DATA.countries;
+  return GEOGRAPHIC_DATASETS[normalizeMapScope(scope)].features;
 }
 
 // ---- geometry: parsing the vendored path data ----------------------------------------
@@ -1510,7 +1530,7 @@ function migrateMapConfig(cfg) {
 
 // ---- build (final/settled state — the editor's non-playing view) ----------------------
 function buildMapGroup(scope, events) {
-  scope = scope === 'japan' ? 'japan' : 'world';
+  scope = normalizeMapScope(scope);
   events = events || [];
   const regions = mapRegionsFor(scope);
   const shapes = [];
@@ -1975,11 +1995,15 @@ function renderMapPropsPanel(body, obj) {
   const cfg = obj.data.map;
   const lblSc = document.createElement('label'); lblSc.textContent = 'Map'; body.appendChild(lblSc);
   const scRow = document.createElement('div'); scRow.className = 'row2'; body.appendChild(scRow);
-  [{ v: 'world', label: 'World' }, { v: 'japan', label: 'Japan prefectures' }].forEach(s => {
+  // Only 'modern' datasets are offered here — a future historical dataset in
+  // GEOGRAPHIC_DATASETS is deliberately NOT exposed through this generic switcher (see
+  // "Historical map layer" in CLAUDE.md): historical scope selection needs its own workflow
+  // (a date, a source, a confidence indicator), not a bare scope button next to "World".
+  Object.values(GEOGRAPHIC_DATASETS).filter(ds => ds.kind === 'modern').forEach(ds => {
     const b = document.createElement('button'); b.type = 'button'; b.style.flex = '1';
-    b.className = 'small' + (cfg.scope === s.v ? ' primary' : ' ghost');
-    b.textContent = s.label;
-    b.addEventListener('click', () => { if (cfg.scope !== s.v) rebuildMap(obj, { scope: s.v, events: [] }); });
+    b.className = 'small' + (cfg.scope === ds.id ? ' primary' : ' ghost');
+    b.textContent = ds.label;
+    b.addEventListener('click', () => { if (cfg.scope !== ds.id) rebuildMap(obj, { scope: ds.id, events: [] }); });
     scRow.appendChild(b);
   });
 
@@ -2511,7 +2535,7 @@ function specToObject(spec) {
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
   } else if (spec.kind === 'map') {
     var mapCfg = migrateMapConfig({
-      scope: spec.scope === 'japan' ? 'japan' : 'world',
+      scope: normalizeMapScope(spec.scope),
       events: spec.events || null,
       highlights: spec.highlights, routeFrom: spec.routeFrom, routeTo: spec.routeTo, routeColor: spec.routeColor,
     });

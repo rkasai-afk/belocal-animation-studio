@@ -129,9 +129,11 @@ tests/test_v14.js             Playwright regression: Map Graphic's events-based 
                                declarative control manifest driving real DOM interaction for
                                every control type (text, checkbox, range, buttonGroup) across
                                all four event types, manual camera pct-to-native-coordinate
-                               conversion, and a longer non-monotonic seek stress test whose
-                               result must match a completely fresh page load's direct render
-                               of the same instant)
+                               conversion, a longer non-monotonic seek stress test whose result
+                               must match a completely fresh page load's direct render of the
+                               same instant, and the geographic dataset registry resolving
+                               mapRegionsFor()/an unknown scope's fallback/the scope-switch
+                               buttons all through GEOGRAPHIC_DATASETS)
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -361,6 +363,21 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   regenerate-in-place pattern as Dot-Grid/Pin/Org-Chart above — switching scope resets
   `events` (prefecture and country names don't overlap), and dragging/resizing the whole group
   works like any other layer via `scaleX`/`scaleY`.
+- **Geographic dataset registry** (`GEOGRAPHIC_DATASETS`, `mapRegionsFor()`,
+  `normalizeMapScope()`, `app.js`) replaced a hardcoded `scope === 'japan' ? ... : ...` ternary
+  (duplicated in three places) as the one source of truth for which map datasets exist. A
+  `GeographicDataset` is `{id, label, kind:'modern'|'historical', features}`; a
+  `GeographicFeature` is whatever shape a dataset's source data already uses (for the two
+  vendored datasets, `{id, name, kanji?, region?, path}`) — every engine function that touches
+  regions reads only `.name`/`.path` off a feature, which is *why* this was a safe, mechanical
+  extraction rather than a redesign: nothing had to change about how a region is used, only
+  where the list of regions comes from. `normalizeMapScope(scope)` centralizes the "unknown
+  scope falls back to `'world'`" default that used to be re-derived at each call site.
+  `mapRegionsFor(scope)` keeps its exact original signature and return shape (an array of
+  region objects) — every one of its ~15 call sites (region dropdowns, `regionAnchor()`,
+  `findRegionAtPoint()`, `computeCameraTarget()`, `buildMapGroup()`, `statAnchorPoint()`)
+  needed zero changes. See "Historical map layer" below for what this extension point does and
+  doesn't unlock yet.
 - **Map event control manifest** (`MAP_EVENT_CONTROLS`, `renderEventControl()`,
   `renderEventControlsForType()`, `app.js`) is what generates the props-panel UI for every map
   event type (`highlight`/`zoom`/`route`/`stat`) — adding a plain field to an event type (a new
@@ -508,13 +525,18 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   the *modern* boundaries it does ship. A historical layer needs its own vetted dataset (the
   kind of institution — Geospatial Information Authority of Japan, National Diet Library,
   university historical-GIS projects — matters for credibility here) before any code is worth
-  writing against it. What *can* be prepared without that data in hand: `data.map.events[]`
-  already treats `region` as an opaque string key into whichever `mapRegionsFor(scope)` list is
-  active, so a future `scope: 'historical-<name>'` entry with its own province/domain path data
-  would reuse `regionAnchor()`/`computeCameraTarget()`/`buildMapGroup()` unmodified — the
-  extension point is the region dataset, not the animation engine. Confidence/provenance
-  metadata (source, date range, disputed/approximate) has no home in the schema yet; it would
-  attach to the region dataset entries, not to individual events.
+  writing against it. The extension point now has a name: add a `GEOGRAPHIC_DATASETS['sengoku']
+  = {id, label, kind:'historical', features:[...]}` entry (see "Geographic dataset registry"
+  below) with its own province/domain path data shaped like the existing `{name, path}`
+  features, and every engine function (`regionAnchor()`/`computeCameraTarget()`/
+  `buildMapGroup()`/`findRegionAtPoint()`) reuses it unmodified — they were already generic
+  over "a named region with a path," never assuming "prefecture" or "country." What's still
+  missing on purpose: a `kind:'historical'` dataset is deliberately excluded from the
+  props-panel scope-switch buttons (they only render `kind:'modern'` entries) since selecting a
+  historical scope needs its own workflow (a date, a source, a confidence indicator), not a
+  bare button; and a feature's optional `meta` provenance object (`dateStart`/`dateEnd`/
+  `controller`/`disputed`/`approximate`/`source`/`confidence`) has a reserved shape but nothing
+  reads or renders it yet.
 - **Declarative control manifest for a future event type.** `MAP_EVENT_CONTROLS` (see "Map
   event control manifest" below) covers every control the current four event types need
   (`text`/`checkbox`/`color`/`region`/`select`/`buttonGroup`/`range`/`time`). A genuinely new

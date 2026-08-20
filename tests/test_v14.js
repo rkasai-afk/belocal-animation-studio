@@ -426,6 +426,28 @@ async function main() {
     JSON.stringify(seekResult), 'vs', JSON.stringify(freshResult),
     JSON.stringify(seekResult) === JSON.stringify(freshResult) ? 'OK' : 'FAIL');
 
+  // --- 49. GeographicDataset/GeographicFeature abstraction: mapRegionsFor() resolves through
+  // the GEOGRAPHIC_DATASETS registry (not a hardcoded ternary), an unknown scope falls back to
+  // 'world' rather than throwing, and the scope-switch buttons in the props panel are
+  // generated from the registry — proving a future dataset entry would need no engine changes,
+  // just a new registry entry, to be usable by every existing map function. ---
+  const geoAbstraction = await page.evaluate(() => ({
+    worldCount: mapRegionsFor('world').length,
+    japanCount: mapRegionsFor('japan').length,
+    unknownFallsBackToWorld: mapRegionsFor('nonexistent-scope').length === mapRegionsFor('world').length,
+    registryHasBothDatasets: !!GEOGRAPHIC_DATASETS.world && !!GEOGRAPHIC_DATASETS.japan,
+    bothAreModernKind: GEOGRAPHIC_DATASETS.world.kind === 'modern' && GEOGRAPHIC_DATASETS.japan.kind === 'modern',
+  }));
+  console.log('49. GeographicDataset registry backs mapRegionsFor(), unknown scope falls back safely:', JSON.stringify(geoAbstraction),
+    geoAbstraction.worldCount > 100 && geoAbstraction.japanCount === 47 && geoAbstraction.unknownFallsBackToWorld && geoAbstraction.registryHasBothDatasets && geoAbstraction.bothAreModernKind ? 'OK' : 'FAIL');
+  const scopeButtonLabels = await page.evaluate(() => {
+    const obj = canvas.getObjects().find(o => o.data && o.data.map);
+    canvas.setActiveObject(obj); canvas.requestRenderAll();
+    return Array.from(document.querySelectorAll('#propsBody .row2 button')).slice(0, 2).map(b => b.textContent.trim());
+  });
+  console.log('49b. scope-switch buttons generated from the registry:', JSON.stringify(scopeButtonLabels),
+    scopeButtonLabels.includes('World') && scopeButtonLabels.includes('Japan prefectures') ? 'OK' : 'FAIL');
+
   console.log('HAD ERROR:', hadError);
   await browser.close();
   if (hadError) process.exit(1);
