@@ -112,11 +112,40 @@ tests/test_v13.js             Playwright regression: the Vertical-only safe-zone
                                zone" button re-nudging a layer dragged back in, and a recorded
                                WebM's decoded pixels confirming the guide is never baked into
                                output
-tests/test_v14.js             Playwright regression: Map Graphic layer (quick-add default,
-                               scope switching, highlight add/remove via dropdown+swatch,
-                               route arrow between two regions, the three Map starter
-                               templates checked for overflow across all 3 aspect ratios like
-                               test_v5's pattern, save/load round-trip)
+tests/test_v14.js             Playwright regression: Map Graphic's events-based animation
+                               system (quick-add default, scope switching, click-to-highlight
+                               toggle via a real canvas click, highlight animating from its
+                               neutral base color rather than appearing pre-highlighted, route
+                               arrowhead direction sanity across three compass directions,
+                               camera zoom capped at MAX_CAMERA_ZOOM, the flagship flight
+                               sequence's marker/camera/stat arrival, stat-card containment
+                               checked on both a large region and a tiny one, the redundant
+                               Edit-tab-click regression, the four Map starter templates
+                               checked for overflow across all 3 aspect ratios like test_v5's
+                               pattern, save/load round-trip of the full events array, a stat
+                               card's optional secondary+source lines staying inside the card,
+                               applyFrame(t) determinism — scrubbing 0 -> 5000 -> 2200
+                               reproduces the exact same state as rendering 2200 directly — the
+                               declarative control manifest driving real DOM interaction for
+                               every control type (text, checkbox, range, buttonGroup) across
+                               all four event types, manual camera pct-to-native-coordinate
+                               conversion, a longer non-monotonic seek stress test whose result
+                               must match a completely fresh page load's direct render of the
+                               same instant, and the geographic dataset registry resolving
+                               mapRegionsFor()/an unknown scope's fallback/the scope-switch
+                               buttons all through GEOGRAPHIC_DATASETS)
+tests/test_v15.js             Playwright regression: the TemporalDataSource foundation
+                               (video-time <-> data-time mapping is an exact inverse pair,
+                               exact source values at real observed years, a correctly
+                               interpolated + explicitly-not-observed value between two real
+                               rows, reverse/non-monotonic seeking reproducing a direct
+                               lookup), the Temporal Linked View benchmark's MapView/LineView/
+                               StatView agreeing at five different requested scene times and
+                               after a non-monotonic seek — the actual synchronization proof,
+                               not just the underlying math — the sequence settling on the
+                               final observed value at the end of playback, overflow-checked
+                               across all 3 aspect ratios, and save/load round-trip of both
+                               new layer kinds
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -197,6 +226,19 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   `fabric.Polygon` from explicit points rather than rotating a primitive — verify by
   comparing the parent group's rendered bounding-box height before/after adding the shape,
   not by eyeballing a screenshot at normal zoom (an 8-10px difference is easy to miss).
+- **`restoreBaseState()` must skip any layer whose `data.baseLeft` was never captured.**
+  `captureBaseState()` (called from `startPlayback()`) is what records each layer's pre-
+  animation `left`/`top`/`scaleX`/`scaleY`/`opacity` onto `data.base*`; `restoreBaseState()`
+  (called from `backToEdit()`, which both `#modeEdit` and `#btnStop` call unconditionally on
+  every click) blindly applies those `data.base*` fields back. If `backToEdit()` runs before
+  `captureBaseState()` ever has — e.g. a user clicks the "Edit" tab redundantly right after
+  loading a template, with nothing yet played — every layer's `data.base*` fields are still
+  `undefined`, and `restoreBaseState()` wipes `left`/`top`/`scaleX`/`scaleY` to `undefined` on
+  every object in the scene. This doesn't throw where it happens; the canvas just silently goes
+  blank, and only surfaces later as a wall of `drawImage: ... canvas element with a width or
+  height of 0` errors on the *next* Preview/Record, once Fabric tries to cache-render an object
+  with `NaN` dimensions — a confusing, delayed symptom that looks unrelated to its actual
+  cause. `restoreBaseState()` now guards with `o.data.baseLeft === undefined` before applying.
 - **In Playwright tests, don't pair `ElementHandle.fill()` with an explicit
   `dispatchEvent('change')`** on a control wired to a rebuild-in-place pattern (Dot-Grid,
   Map Pin). Together they can fire the change handler twice; the second call lands on a
@@ -265,21 +307,161 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   object's absolute `getBoundingRect(true, true)` and translating via `left`/`top` deltas —
   this is safe under rotation/scale because translating an object's origin point shifts its
   whole rendered bounding box by the same delta, regardless of its own transform.
-- **Map Graphic** (`buildMapGroup()`/`rebuildMap()`, `src/map_data.js`) renders illustrated
-  country or Japan-prefecture outlines from vendored SVG path data — real geographic
-  boundaries, but static vector data rather than live tiles, so (unlike the Map/Location Pin
-  above) it needs zero network requests and still fits this project's single-file
-  architecture. Regions are matched by exact name (case-insensitive) against
+- **Map Graphic** (`buildMapGroup()`/`rebuildMap()`/`applyMapTimeline()`, `src/map_data.js`)
+  renders illustrated country or Japan-prefecture outlines from vendored SVG path data — real
+  geographic boundaries, but static vector data rather than live tiles, so (unlike the
+  Map/Location Pin above) it needs zero network requests and still fits this project's
+  single-file architecture. Regions are matched by exact name (case-insensitive) against
   `WORLD_MAP_DATA.countries`/`JAPAN_MAP_DATA.prefectures` — the props panel only ever offers
-  names from a `<select>`, so a typo can't silently fail to highlight anything. A region's
-  centroid for the optional route arrow is read from its `fabric.Path`'s own bounding box
-  (`path.left + path.width/2`, before grouping) — this works because every path in one scope
-  shares one coordinate system, and `fabric.Group`'s constructor is what normalizes
-  everything to be relative to the group's own bounding box afterward, the same mechanic
-  Dot-Grid's absolute-pixel-then-group approach already relies on. Follows the exact
+  names from a `<select>`, so a typo can't silently fail to highlight anything. The layer's
+  config is `data.map = {scope, events[], baseTransform, _runtime}` — an ordered list of
+  `highlight`/`zoom`/`route`/`stat` events, each with its own `start`/`duration`, is the map's
+  own sub-timeline, played by `applyMapTimeline()` as a second pass inside `applyFrame()` after
+  the normal per-layer fade/pop/slide pass (so a map's entrance animation and its internal
+  story beats are independent, not fused into one hard-coded sequence). `migrateMapConfig()`
+  synthesizes an equivalent `events[]` from the old flat `highlights`/`routeFrom`/`routeTo`
+  shape so older saved projects still load. A region's centroid/bounds — used for the route
+  anchor, the camera zoom target, and the stat card anchor alike — is `regionAnchor()`'s
+  largest-subpath-by-shoelace-area centroid, **not** a raw bounding-box center: several
+  prefectures/countries include far-flung islands or get split at the antimeridian, which
+  drags a naive bbox-center miles from the actual landmass. `regionAnchor()` caches by
+  `scope|name` in `_regionAnchorCache` — when editing this function, the `best` candidate
+  object it keeps across iterations MUST carry `area` alongside `x`/`y`/`bounds`, or the
+  `c.area > best.area` comparison silently becomes `c.area > undefined` (always false) after
+  the first subpath, degrading it to "whichever subpath appears first in the path string"
+  instead of "largest" — this exact regression once made every zoom/route/stat anchor land on
+  a stray island or coastline fragment instead of the real landmass, with no error or crash to
+  flag it, only wrong-looking geometry. The camera (`computeCameraTarget()`/
+  `applyCameraState()`) scales/pans the whole map `fabric.Group` as one transform — never
+  individual children — which is what keeps regions/routes/markers/stat cards geometrically
+  coherent through a zoom, and is capped at `MAX_CAMERA_ZOOM` (currently 6x) so a tiny region
+  (a prefecture can be 1/15th the width of the whole Japan map) doesn't produce a jarring,
+  un-cinematic lurch. **MapSpace vs ScreenSpace** is an explicit distinction, not just an
+  implementation detail: geography, region highlights, routes, and the moving marker are pure
+  MapSpace — native map coordinates, children of the one `fabric.Group` the camera transforms
+  as a whole, so they're geometrically coherent through any pan/zoom by construction. A layer's
+  own entrance (fade/pop/slide, `data.anim`) and the eyebrow/title text around the map are pure
+  ScreenSpace — positioned in canvas coordinates, never touched by `applyCameraState()`. A stat
+  card is the one deliberately hybrid case: **map-space positioned but screen-space sized** —
+  its shapes are ordinary children of the map group (so the card tracks its region through a
+  camera move, i.e. its *position* is MapSpace), but `applyMapTimeline()` counter-scales them by
+  `1/camScaleMultiplier` every frame and repositions them as `anchor + baseOffset*counterScale`
+  (offsets recorded once at build time in `buildStatCard()`'s returned `offsets` map, alongside
+  `label`/`value`/`secondary`/`source` rows laid out via a running cursor rather than hand-tuned
+  per-row offsets) — without this, the card's on-screen *size* and its distance from the region
+  it annotates would both balloon with camera zoom, the same way a map marker icon shouldn't
+  grow as you zoom a slippy map. If a future layer type needs the reverse hybrid (ScreenSpace
+  position, e.g. fixed to a video-frame corner, but MapSpace-driven content), it should get its
+  own explicit counter-transform the same way — never assume "child of the map group" implies
+  "moves and scales exactly like the map." Every shape `buildStatCard()` constructs must set
+  `originX`/`originY` explicitly
+  (`'left'`/`'top'`, matching the `left`/`top` values used to position it) — a plain
+  `new fabric.Rect({left, top, ...})` with no origin defaults to **center** origin in this
+  vendored Fabric v7 build, so a background card built that way renders centered on `(left,
+  top)` while text built with explicit `originX:'left'` renders with `(left,top)` as its
+  corner, silently misaligning the two even though their local coordinates look consistent on
+  paper — always screenshot a real render at the actual (non-1x) camera scale the card will
+  appear at, not just inspect the constructor args, since the two origins agree exactly at a
+  scale of 1 and only visibly diverge once zoomed. Click-to-highlight
+  (`canvas.on('mouse:down', ...)`) hit-tests via `findRegionAtPoint()` (ray-casting against
+  each region's subpaths) rather than Fabric's own event targeting, converting the click with
+  `canvas.getScenePoint(e)` and `fabric.util.transformPoint(pt, fabric.util.invertTransform(
+  obj.calcTransformMatrix()))` — **not** `canvas.getPointer()`/`object.toLocalPoint()`, both of
+  which this vendored Fabric v7 build has removed entirely (calling either throws
+  `TypeError: ... is not a function`, silently breaking every click on a selected map with no
+  visible symptom beyond "clicking a region does nothing"); double-check any *new* pointer/
+  coordinate code against what's actually exported from `src/fabric.min.js`, since Fabric's own
+  migration guides and search-engine answers still describe the pre-v7 API. Follows the exact
   regenerate-in-place pattern as Dot-Grid/Pin/Org-Chart above — switching scope resets
-  highlights/route (prefecture and country names don't overlap), and dragging/resizing the
-  whole group works like any other layer via `scaleX`/`scaleY`.
+  `events` (prefecture and country names don't overlap), and dragging/resizing the whole group
+  works like any other layer via `scaleX`/`scaleY`.
+- **Geographic dataset registry** (`GEOGRAPHIC_DATASETS`, `mapRegionsFor()`,
+  `normalizeMapScope()`, `app.js`) replaced a hardcoded `scope === 'japan' ? ... : ...` ternary
+  (duplicated in three places) as the one source of truth for which map datasets exist. A
+  `GeographicDataset` is `{id, label, kind:'modern'|'historical', features}`; a
+  `GeographicFeature` is whatever shape a dataset's source data already uses (for the two
+  vendored datasets, `{id, name, kanji?, region?, path}`) — every engine function that touches
+  regions reads only `.name`/`.path` off a feature, which is *why* this was a safe, mechanical
+  extraction rather than a redesign: nothing had to change about how a region is used, only
+  where the list of regions comes from. `normalizeMapScope(scope)` centralizes the "unknown
+  scope falls back to `'world'`" default that used to be re-derived at each call site.
+  `mapRegionsFor(scope)` keeps its exact original signature and return shape (an array of
+  region objects) — every one of its ~15 call sites (region dropdowns, `regionAnchor()`,
+  `findRegionAtPoint()`, `computeCameraTarget()`, `buildMapGroup()`, `statAnchorPoint()`)
+  needed zero changes. See "Historical map layer" below for what this extension point does and
+  doesn't unlock yet.
+- **Map event control manifest** (`MAP_EVENT_CONTROLS`, `renderEventControl()`,
+  `renderEventControlsForType()`, `app.js`) is what generates the props-panel UI for every map
+  event type (`highlight`/`zoom`/`route`/`stat`) — adding a plain field to an event type (a new
+  text/select/checkbox/color/region/range control) is a one-line manifest entry, not new UI
+  code. Each control declares `key`/`label`/`type` and type-specific fields (`options` for
+  `select`/`buttonGroup`, `min`/`max`/`step` for `range`, `placeholder` for `text`); the
+  manifest describes *semantic* controls a creator edits ("Curve: Medium"), never raw
+  implementation properties (bezier control points, transform matrices) — see the `route`
+  entry's `curve` control (one preset dropdown) versus what it would look like exposing the
+  underlying bezier control point directly. Two escape hatches keep this from needing a bigger
+  framework: `showIf(e)` is the only conditional-visibility mechanism (used by the zoom type's
+  auto/manual toggle — the manual-framing `range` controls are hidden until `e.manual` is
+  checked) and `onSet(e, v)` lets one control's change imply a composite update a plain
+  `e[key]=v` can't express (route's `style` buttonGroup also derives `movingObject` and a
+  default `curve`) — both are still *data* attached to the field descriptor, not a new branch
+  in the renderer. `pairWithNext: true` renders a control side-by-side with the one after it in
+  a `row2` (From/To, Value/Unit) — the only layout hint this needs right now. Adding a genuinely
+  new control *type* (not just a new field) still means a new branch in `renderEventControl()`
+  itself — the manifest removes per-event-type duplication, not the primitive-control set.
+- **PLAYBACK CLOCK vs SCENE EVALUATOR** is an explicit split, not just an implementation
+  detail. The playback clock is whatever produces a requested elapsed-millisecond value —
+  `loop()`'s `requestAnimationFrame` during Preview/Record, or the timeline scrubber dragging
+  directly — and it may jump around non-monotonically (a user scrubbing back and forth). The
+  scene evaluator is `applyFrame(elapsed)` (and, for a Map Graphic, `applyMapTimeline()` inside
+  it): given one prior `captureBaseState()` call, it is a **pure function of `elapsed`** — every
+  object's state is recomputed fresh from `elapsed` and the project's own config every call,
+  with no accumulated/carried-over state from previous calls. This is verified, not assumed:
+  `tests/test_v14.js` #43 seeks `0 -> 5000 -> 2200` and diffs against a direct render of 2200;
+  #48 runs a longer non-monotonic sequence (`0, 500, 2500, 900, 4200, 1300`) and diffs the
+  result against a *completely fresh page load's* direct render of 1300, across highlight
+  color, camera transform, route marker position/rotation, and stat text/opacity together.
+  `requestAnimationFrame` remains the right choice for interactive playback — nothing here
+  argues for a frame-indexed renderer — but the reason scrubbing, recording, and this test
+  suite all behave correctly is that the clock and the evaluator never share mutable state.
+  The one thing that *would* break this: calling `captureBaseState()` more than once per
+  playback/scrub session (each call re-captures each object's *current* — possibly
+  already-animated — properties as the new "base", corrupting later evaluations); it's called
+  exactly once, from `startPlayback()` and `beginScrub()`.
+- **Temporal data foundation** (`createTemporalDataSource()`, `TEMPORAL_FIXTURES`,
+  `temporalSourceFor()`, `app.js`) maps VIDEO TIME (elapsed milliseconds, the same currency
+  every other animation in this file runs on) to DATA TIME (whatever unit a dataset's own time
+  field uses) and back, and distinguishes OBSERVED (an exact source row) from INTERPOLATED (a
+  smoothly-animated in-between state) — `valueAt(entity, dataTime)` returns `{value, time,
+  observed}`, never silently presenting an interpolated state as if it were real. This is a
+  reusable primitive, not a chart component: it knows nothing about maps, lines, or stat cards.
+  `TEMPORAL_FIXTURES.fixtureIndex` is clearly-labeled **test fixture data** (round synthetic
+  numbers, matching the exact example given in the phase spec this was built against) — not
+  real documentary statistics; a real scene would supply its own sourced records via the same
+  `{records, timeField, entityField, valueField}` shape. Two new layer kinds read from it:
+  `buildLineChartGroup()`/`applyLineChartTimeline()` (`data.temporalLine` — a first-version line
+  chart: baseline, full value line, a moving cursor, current value, min/max labels) and
+  `buildTemporalStatGroup()`/`applyTemporalStatTimeline()` (`data.temporalStat` — reuses
+  `buildStatCard()` directly, the *same* visual system a Map Graphic's stat event uses, per
+  "use the existing stat/event visual system where practical" rather than a second
+  implementation). A plain map `highlight` event (already existing, no new map code) plays the
+  MapView role for the first proof — "just show which entity," not a choropleth. These are
+  deliberately three independent layer types, not one `PopulationMapWithGraphComponent`: **the
+  synchronization proof is that they agree despite never referencing each other**, only the
+  same `{sourceId, videoStart, videoEnd}` config and the same `elapsed` — see
+  `tests/test_v15.js` #8/#9. **Critical gotcha already hit once**: a temporal layer's
+  `videoStart`/`videoEnd` is scene-global data time, and `applyFrame()`'s second pass for
+  `temporalLine`/`temporalStat` deliberately does NOT subtract each layer's own
+  `data.anim.delay` before evaluating it (unlike `applyMapTimeline`, which does subtract the
+  map's own delay for its *own* sub-events). Two sibling temporal views with different
+  entrance-fade delays would otherwise silently read *different* data-time windows at the same
+  instant despite identical `videoStart`/`videoEnd` config — this exact bug was caught by
+  `test_v15.js` #8 during development (LineView and StatView showed "94 idx" vs "95 idx" at the
+  same elapsed time until fixed). Deferred, per the phase spec's explicit scoping: rankings,
+  population pyramids, scatter/trails, flows, small multiples, narration/word-timing sync,
+  and any props-panel UI for editing these two new layer types beyond template-authored
+  starting points — this is the shared clock/data primitive those would eventually read from,
+  not any of those forms themselves.
 - **Custom font import** registers via the `FontFace` API (`registerCustomFont`) and is
   persisted into saved `.json` projects as base64 data URLs (`customFonts` array) so a
   reloaded project re-registers the same fonts before enlivening objects.
@@ -384,6 +566,42 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   each one needs before it's real. Production-document import (`.docx`/`.pdf`) *is* built —
   see that same file's "Import Production Document" section for the field mapping and known
   limitations.
+- **Historical map layer.** No historical (pre-modern-prefecture) boundary data is vendored,
+  and none should be fabricated — `src/map_data.js`'s header already documents its sources for
+  the *modern* boundaries it does ship. A historical layer needs its own vetted dataset (the
+  kind of institution — Geospatial Information Authority of Japan, National Diet Library,
+  university historical-GIS projects — matters for credibility here) before any code is worth
+  writing against it. The extension point now has a name: add a `GEOGRAPHIC_DATASETS['sengoku']
+  = {id, label, kind:'historical', features:[...]}` entry (see "Geographic dataset registry"
+  below) with its own province/domain path data shaped like the existing `{name, path}`
+  features, and every engine function (`regionAnchor()`/`computeCameraTarget()`/
+  `buildMapGroup()`/`findRegionAtPoint()`) reuses it unmodified — they were already generic
+  over "a named region with a path," never assuming "prefecture" or "country." What's still
+  missing on purpose: a `kind:'historical'` dataset is deliberately excluded from the
+  props-panel scope-switch buttons (they only render `kind:'modern'` entries) since selecting a
+  historical scope needs its own workflow (a date, a source, a confidence indicator), not a
+  bare button; and a feature's optional `meta` provenance object (`dateStart`/`dateEnd`/
+  `controller`/`disputed`/`approximate`/`source`/`confidence`) has a reserved shape but nothing
+  reads or renders it yet.
+- **Declarative control manifest for a future event type.** `MAP_EVENT_CONTROLS` (see "Map
+  event control manifest" below) covers every control the current four event types need
+  (`text`/`checkbox`/`color`/`region`/`select`/`buttonGroup`/`range`/`time`). A genuinely new
+  control shape (e.g. a multi-line text area, a date picker for a future historical event)
+  would still need a new branch added to `renderEventControl()` — the manifest removes the
+  *per-event-type* duplication, not the need to ever add a new primitive control renderer.
+- **Temporal layer editor UI.** `data.temporalLine`/`data.temporalStat` (see "Temporal data
+  foundation" above) have no props-panel controls yet — they're template-authored only (see the
+  "Temporal: Map + Line + Stat" starter). A creator can't currently pick a different entity,
+  dataset, or time window without hand-editing the saved JSON. Building that UI is a smaller
+  lift than it sounds now that the control manifest exists (a `sourceId` select, an `entity`
+  select populated from `TemporalDataSource.entities()`, two `time` controls for the video
+  window) but was left out of this pass per the phase's own explicit scoping ("do not yet
+  build... a huge chart props panel") — the point of this pass was proving the
+  TemporalDataSource/MapView/LineView/StatView architecture, not shipping a data-bound
+  editing surface. Also deliberately not built, per that same scoping: bar-chart races,
+  population pyramids, scatter/trails, Sankey/flow diagrams, small multiples, real dataset
+  import (CSV/XLSX), and any automatic chart-type recommendation — `createTemporalDataSource()`
+  is the shared primitive those would eventually read from, not any of those forms themselves.
 
 ## Who this is for
 

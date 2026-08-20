@@ -23,7 +23,7 @@ async function main() {
   console.log('1. chips include All + 6 categories:', chipLabels.length === 7 ? 'OK' : 'FAIL');
 
   const allTplBtns = await page.$$('#templateGrid .tpl-btn');
-  console.log('2. "All" shows all 14 templates:', allTplBtns.length, allTplBtns.length === 14 ? 'OK' : 'FAIL');
+  console.log('2. "All" shows all 16 templates:', allTplBtns.length, allTplBtns.length === 16 ? 'OK' : 'FAIL');
   await page.screenshot({ path: path.join(outDir, '01_all_templates.png') });
 
   // --- 3. filtering by a category narrows the grid, and loading a template from it still works ---
@@ -46,7 +46,7 @@ async function main() {
   await chipBtns2[chipLabels2.findIndex(l => l === 'All')].click();
   await page.waitForTimeout(200);
   const restoredBtns = await page.$$('#templateGrid .tpl-btn');
-  console.log('5. back to All restores full list:', restoredBtns.length, restoredBtns.length === 14 ? 'OK' : 'FAIL');
+  console.log('5. back to All restores full list:', restoredBtns.length, restoredBtns.length === 16 ? 'OK' : 'FAIL');
 
   console.log('HAD ERROR:', hadError);
   await browser.close();
