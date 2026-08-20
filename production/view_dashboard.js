@@ -97,6 +97,7 @@ export async function renderDashboard(main, episodeId) {
         <div><label class="field-label">Long-form script</label><textarea id="fLong" style="width:100%;min-height:140px;">${escapeHtml(ep.longScript)}</textarea></div>
         <div><label class="field-label">Short-form script</label><textarea id="fShort" style="width:100%;min-height:80px;">${escapeHtml(ep.shortScript)}</textarea></div>
         <div><label class="field-label">Master caption</label><textarea id="fCaption" style="width:100%;">${escapeHtml(ep.masterCaption)}</textarea></div>
+        <div><label class="field-label">Production notes / guardrails</label><textarea id="fNotes" style="width:100%;min-height:110px;" placeholder="Verdict, editorial guardrails, things to avoid claiming...">${escapeHtml(ep.productionNotes || '')}</textarea></div>
       </div>
     </div>
   `;
@@ -150,8 +151,8 @@ function handleAction(a, ep) {
 
 function setupDetailsAutosave(ep) {
   const stateEl = document.getElementById('detailsSaveState');
-  const fields = ['fDesc', 'fRuntime', 'fLong', 'fShort', 'fCaption'];
-  const keyMap = { fDesc: 'description', fRuntime: 'runtimeTarget', fLong: 'longScript', fShort: 'shortScript', fCaption: 'masterCaption' };
+  const fields = ['fDesc', 'fRuntime', 'fLong', 'fShort', 'fCaption', 'fNotes'];
+  const keyMap = { fDesc: 'description', fRuntime: 'runtimeTarget', fLong: 'longScript', fShort: 'shortScript', fCaption: 'masterCaption', fNotes: 'productionNotes' };
   const save = debounce(async () => {
     stateEl.textContent = 'SAVING…';
     stateEl.className = 'save-state saving';

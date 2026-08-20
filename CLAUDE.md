@@ -329,6 +329,14 @@ constraint. Full detail lives in `production/README.md`; the essentials:
   neither tool's existing behavior changes at all. See `production/integration.js` for the
   opener side and the `docHandoff`/`sendDocHandoffAsset` blocks near the end of the other two
   tools' `app.js` files for the child side.
+- **Production-document import** (`production/import*.js`) parses the standard BeLocal
+  `.docx`/`.pdf` production document into an episode, its beats, sources, and Fact Lock
+  claims. The parsing logic is a pure function of a block/line array (unit-testable without
+  a browser); getting that array out of the file is the only format-specific part — a
+  hand-rolled ZIP+DOMParser reader for `.docx` (no library needed, the browser already has
+  `DecompressionStream`), and vendored pdf.js (`production/vendor/`, same "vendor a finished
+  build artifact" pattern as `src/fabric.min.js`/`subtitles/transformers.min.js`) for `.pdf`.
+  See `production/README.md` "Import Production Document" for the full field mapping.
 
 ## Deferred / likely next asks
 
@@ -342,11 +350,13 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   a background map image), but genuine mapping (tiles, geocoding) is intentionally out of
   scope — it would need external requests, which the single-file/no-network architecture
   rules out categorically, not just as a matter of remaining effort.
-- **Documentary Studio** (`production/`) has its own deferred list — DOCX production-document
-  import, AI-assisted asset tagging/search, Evidence Visualizer, Map Builder, Data Story
-  Engine, Voiceover/Radio Cut assembly, and Final QC cross-checking — all intentionally
-  stubbed or left as future hooks rather than built fragile. See `production/README.md`
-  "Deferred / future modules" for what each one needs before it's real.
+- **Documentary Studio** (`production/`) has its own deferred list — AI-assisted asset
+  tagging/search, Evidence Visualizer, Map Builder, Data Story Engine, Voiceover/Radio Cut
+  assembly, and Final QC cross-checking — all intentionally stubbed or left as future hooks
+  rather than built fragile. See `production/README.md` "Deferred / future modules" for what
+  each one needs before it's real. Production-document import (`.docx`/`.pdf`) *is* built —
+  see that same file's "Import Production Document" section for the field mapping and known
+  limitations.
 
 ## Who this is for
 

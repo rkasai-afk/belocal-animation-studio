@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import { computeEpisodeProgress } from './progress.js';
 import { escapeHtml, openModal, closeModal, navigate, toast } from './util.js';
+import { parseProductionDocument, applyParsedEpisode } from './import.js';
 
 export async function renderEpisodes(main) {
   main.innerHTML = `
@@ -15,7 +16,7 @@ export async function renderEpisodes(main) {
   `;
 
   document.getElementById('btnNewEpisode').addEventListener('click', () => openNewEpisodeModal());
-  document.getElementById('btnImport').addEventListener('click', () => openImportStubModal());
+  document.getElementById('btnImport').addEventListener('click', () => openImportModal());
 
   const episodes = await db.listEpisodes();
   const wrap = document.getElementById('epGridWrap');
@@ -31,7 +32,7 @@ export async function renderEpisodes(main) {
         </div>
       </div>`;
     document.getElementById('esNew').addEventListener('click', () => openNewEpisodeModal());
-    document.getElementById('esImport').addEventListener('click', () => openImportStubModal());
+    document.getElementById('esImport').addEventListener('click', () => openImportModal());
     return;
   }
 
@@ -114,23 +115,64 @@ function openNewEpisodeModal() {
   });
 }
 
-function openImportStubModal() {
+function openImportModal() {
   openModal(`
     <h3>Import Production Document</h3>
     <p style="font-size:13px;color:var(--text-gray);line-height:1.5;">
-      Automatic import from the standardized BeLocal production .docx isn't built yet —
-      parsing a real document reliably needs more source examples to get right.
+      Pick a standard BeLocal production document (.docx or .pdf). It's parsed entirely in
+      your browser — nothing is uploaded anywhere.
     </p>
-    <p style="font-size:13px;color:var(--text-gray);line-height:1.5;">
-      For now: create the episode with <strong>+ New Episode</strong>, then paste the
-      long-form script into the episode's Script field and add story beats in the Edit
-      Blueprint. This button stays here as the future home for real .docx import — it
-      won't move once it's built.
-    </p>
+    <input type="file" id="imFile" accept=".docx,.pdf">
+    <div id="imStatus" class="help-tip"></div>
     <div class="modal-actions">
-      <button id="imOk" class="primary">Got it</button>
+      <button id="imCancel">Cancel</button>
     </div>
   `, (root) => {
-    root.querySelector('#imOk').addEventListener('click', closeModal);
+    root.querySelector('#imCancel').addEventListener('click', closeModal);
+    root.querySelector('#imFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const statusEl = root.querySelector('#imStatus');
+      statusEl.textContent = 'Reading and parsing…';
+      try {
+        const parsed = await parseProductionDocument(file);
+        showImportPreview(parsed);
+      } catch (err) {
+        statusEl.textContent = `Could not read this file: ${err.message}`;
+      }
+    });
+  });
+}
+
+function showImportPreview(parsed) {
+  const sourcesWithUrl = parsed.sources.filter((s) => s.url).length;
+  const beatsWithSource = parsed.beats.filter((b) => b.sourceCode).length;
+  openModal(`
+    <h3>Review Before Importing</h3>
+    <p style="font-size:13px;color:var(--text-gray);line-height:1.5;">
+      Parsing is best-effort — check the numbers below look right, then review the episode
+      itself afterward. Nothing here is final; every field stays editable.
+    </p>
+    <div class="source-box">
+      <div class="src-title">EP${escapeHtml(parsed.number || '—')} — ${escapeHtml(parsed.title || 'Untitled')}</div>
+      <div style="margin-top:8px;font-size:12.5px;color:var(--text-gray);line-height:1.7;">
+        ${parsed.beats.length} story beats found (${beatsWithSource}/${parsed.beats.length} linked to a source)<br>
+        ${parsed.sources.length} sources found (${sourcesWithUrl}/${parsed.sources.length} with a URL)<br>
+        ${parsed.claims.length} fact-check claim${parsed.claims.length === 1 ? '' : 's'} drafted from the verdict${parsed.claims.length > 1 ? ' and research evaluation' : ''}<br>
+        ${parsed.shortScript ? '✓' : '✗'} Short-form script &nbsp; ${parsed.masterCaption ? '✓' : '✗'} Publishing caption
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="ipCancel">Cancel</button>
+      <button id="ipCreate" class="primary">Create Episode from This</button>
+    </div>
+  `, (root) => {
+    root.querySelector('#ipCancel').addEventListener('click', closeModal);
+    root.querySelector('#ipCreate').addEventListener('click', async () => {
+      const episode = await applyParsedEpisode(parsed);
+      closeModal();
+      toast('Episode imported — review it below.');
+      navigate(`#dashboard/${episode.id}`);
+    });
   });
 }
