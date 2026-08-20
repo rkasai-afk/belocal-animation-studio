@@ -242,6 +242,8 @@ function D(opts) { return Object.assign({ kind:'dotgrid' }, opts); }
 function P(opts) { return Object.assign({ kind:'pin' }, opts); }
 function O(opts) { return Object.assign({ kind:'orgchart' }, opts); }
 function M(opts) { return Object.assign({ kind:'map' }, opts); }
+function LN(opts) { return Object.assign({ kind:'temporalLine' }, opts); }
+function TS(opts) { return Object.assign({ kind:'temporalStat' }, opts); }
 
 /* ---- Dot-Grid Pictogram: built as one resizable "generated group" layer, not      ---- */
 /* ---- hundreds of individually-draggable dots. Total/highlight are edited via      ---- */
@@ -1216,6 +1218,218 @@ function renderMapPropsPanel(body, obj) {
     : 'Country-level only — switch to Japan prefectures for regional detail within Japan.';
   body.appendChild(note);
 }
+
+/* ================================================================================
+   TEMPORAL DATA FOUNDATION — video time vs data time, observed vs interpolated
+   ================================================================================
+   A reusable primitive, not a chart component: createTemporalDataSource() knows nothing
+   about maps, lines, or stat cards. It maps VIDEO TIME (elapsed milliseconds, the same
+   currency every other animation in this file runs on) to DATA TIME (whatever unit the
+   dataset's own time field uses — years, here) and back, and answers "what's this entity's
+   value at this data time" with an explicit OBSERVED vs INTERPOLATED distinction — never
+   silently presenting a smoothly-animated in-between state as if it were a real observation
+   the dataset actually contains. Three independent layer kinds below (an existing map
+   highlight, a new line chart, a new stat card) each read from this SAME primitive with the
+   SAME {sourceId, videoStart, videoEnd} config; because every one of them is a pure function
+   of `elapsed` (matching the PLAYBACK CLOCK vs SCENE EVALUATOR split documented for the map
+   system above), they stay synchronized by construction — proven in tests/test_v14.js by
+   comparing their independently-computed states at the same elapsed instant, not by any
+   runtime event bus between them. See CLAUDE.md's "Temporal data foundation" note for the
+   full architectural rationale and what's deliberately NOT built yet (rankings, pyramids,
+   scatter/trails, flows, small multiples — this is the shared clock/data primitive those
+   would eventually read from, not any of those chart forms themselves).
+   ================================================================================ */
+// TEST FIXTURE DATA — deliberately simple round numbers (matching the exact example given in
+// the phase spec this was built against), NOT real documentary/production statistics. Proves
+// the TemporalDataSource architecture without performing any research inside this
+// implementation pass. A real documentary scene would supply its own sourced records.
+const TEMPORAL_FIXTURES = {
+  fixtureIndex: {
+    label: 'Fixture: regional index (TEST DATA, not real statistics)',
+    timeField: 'year', entityField: 'region', valueField: 'value', unit: 'index (2000=100)',
+    records: [
+      { region: 'Hokkaidō', year: 2000, value: 100 },
+      { region: 'Hokkaidō', year: 2005, value: 96 },
+      { region: 'Hokkaidō', year: 2010, value: 91 },
+      { region: 'Hokkaidō', year: 2015, value: 87 },
+      { region: 'Hokkaidō', year: 2020, value: 82 },
+      { region: 'Okinawa', year: 2000, value: 100 },
+      { region: 'Okinawa', year: 2005, value: 104 },
+      { region: 'Okinawa', year: 2010, value: 109 },
+      { region: 'Okinawa', year: 2015, value: 113 },
+      { region: 'Okinawa', year: 2020, value: 118 },
+    ],
+  },
+};
+// records: [{[timeField]: number, [entityField]: string, [valueField]: number}, ...]
+// videoStart/videoEnd: elapsed milliseconds this data's full time range plays across.
+// dataStart/dataEnd: optional — defaults to the min/max of the records' own time field.
+function createTemporalDataSource(cfg) {
+  const timeField = cfg.timeField || 'time', entityField = cfg.entityField || 'entity', valueField = cfg.valueField || 'value';
+  const records = cfg.records || [];
+  const observedTimes = Array.from(new Set(records.map(r => r[timeField]))).sort((a, b) => a - b);
+  const dataStart = cfg.dataStart != null ? cfg.dataStart : observedTimes[0];
+  const dataEnd = cfg.dataEnd != null ? cfg.dataEnd : observedTimes[observedTimes.length - 1];
+  const videoStart = cfg.videoStart || 0, videoEnd = cfg.videoEnd != null ? cfg.videoEnd : videoStart + 1000;
+  function videoTimeToDataTime(vt) {
+    const span = videoEnd - videoStart;
+    const frac = span ? clamp01((vt - videoStart) / span) : 0;
+    return dataStart + frac * (dataEnd - dataStart);
+  }
+  function dataTimeToVideoTime(dt) {
+    const span = dataEnd - dataStart;
+    const frac = span ? (dt - dataStart) / span : 0;
+    return videoStart + frac * (videoEnd - videoStart);
+  }
+  function entities() { return Array.from(new Set(records.map(r => r[entityField]))); }
+  function rowsFor(entity) { return records.filter(r => r[entityField] === entity).sort((a, b) => a[timeField] - b[timeField]); }
+  // Official observations often exist only at discrete times (every 5 years, here); the
+  // animation may move smoothly between them, but the caller must be able to tell "this is
+  // real row N" from "this is an interpolated in-between state" — `observed` is exactly that.
+  function valueAt(entity, dataTime) {
+    const rows = rowsFor(entity);
+    if (!rows.length) return null;
+    const first = rows[0], last = rows[rows.length - 1];
+    if (dataTime <= first[timeField]) return { value: first[valueField], time: first[timeField], observed: dataTime === first[timeField] };
+    if (dataTime >= last[timeField]) return { value: last[valueField], time: last[timeField], observed: dataTime === last[timeField] };
+    for (let i = 0; i < rows.length - 1; i++) {
+      const a = rows[i], b = rows[i + 1];
+      if (dataTime < a[timeField] || dataTime > b[timeField]) continue;
+      if (dataTime === a[timeField]) return { value: a[valueField], time: a[timeField], observed: true };
+      if (dataTime === b[timeField]) return { value: b[valueField], time: b[timeField], observed: true };
+      const t = (dataTime - a[timeField]) / (b[timeField] - a[timeField]);
+      return { value: lerp(a[valueField], b[valueField], t), time: dataTime, observed: false };
+    }
+    return null;
+  }
+  return { records, timeField, entityField, valueField, dataStart, dataEnd, videoStart, videoEnd, observedTimes, videoTimeToDataTime, dataTimeToVideoTime, valueAt, entities, rowsFor };
+}
+// Resolves a layer config's {sourceId, videoStart, videoEnd} into a live TemporalDataSource —
+// the one place that knows how to turn a fixture/dataset id into records, so LineView and
+// StatView below both go through it rather than each reaching into TEMPORAL_FIXTURES directly.
+function temporalSourceFor(dataCfg) {
+  const fixture = TEMPORAL_FIXTURES[dataCfg.sourceId];
+  if (!fixture) return null;
+  return createTemporalDataSource(Object.assign({}, fixture, { videoStart: dataCfg.videoStart, videoEnd: dataCfg.videoEnd }));
+}
+
+/* ---- LineView: a temporal line chart layer — first version deliberately minimal (axis-lite  */
+/* ---- frame, one line, a moving cursor, current value) per the "prove architecture, don't    */
+/* ---- build a chart library" scoping. Regenerate-in-place, same pattern as Dot-Grid/Map/Pin.  */
+function buildLineChartGroup(cfg) {
+  const src = temporalSourceFor(cfg);
+  const w = cfg.width || 480, h = cfg.height || 200;
+  const color = cfg.color || COLORS.tealLight;
+  const shapes = [];
+  const baseline = new fabric.Line([0, h, w, h], { stroke: 'rgba(255,255,255,0.25)', strokeWidth: 1, selectable: false, evented: false });
+  shapes.push(baseline);
+  let linePath = null, pts = [], minV = 0, maxV = 1;
+  const rows = src ? src.rowsFor(cfg.entity) : [];
+  if (src && rows.length) {
+    const vals = rows.map(r => r[src.valueField]);
+    minV = Math.min(...vals); maxV = Math.max(...vals);
+    const padV = (maxV - minV) * 0.15 || Math.abs(maxV) * 0.1 || 1;
+    const yFor = (v) => h - ((v - (minV - padV)) / ((maxV + padV) - (minV - padV))) * h;
+    const xFor = (t) => src.dataEnd > src.dataStart ? ((t - src.dataStart) / (src.dataEnd - src.dataStart)) * w : 0;
+    pts = rows.map(r => ({ x: xFor(r[src.timeField]), y: yFor(r[src.valueField]) }));
+    const d = 'M ' + pts.map(p => `${p.x} ${p.y}`).join(' L ');
+    linePath = new fabric.Path(d, { fill: '', stroke: color, strokeWidth: 3, strokeLineJoin: 'round', strokeLineCap: 'round', opacity: 0.9, selectable: false, evented: false });
+    shapes.push(linePath);
+  }
+  const minLabel = new fabric.Textbox(rows.length ? String(minV) : '', { left: 0, top: h + 6, width: 80, fontSize: 12, fill: 'rgba(255,255,255,0.55)', originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  const maxLabel = new fabric.Textbox(rows.length ? String(maxV) : '', { left: w - 80, top: -20, width: 80, fontSize: 12, fill: 'rgba(255,255,255,0.55)', originX: 'right', originY: 'top', textAlign: 'right', selectable: false, evented: false, splitByGrapheme: false });
+  shapes.push(minLabel, maxLabel);
+  const startPt = pts[0] || { x: 0, y: h };
+  const cursor = new fabric.Circle({ left: startPt.x, top: startPt.y, radius: 6, fill: '#FFFFFF', stroke: color, strokeWidth: 2.5, originX: 'center', originY: 'center', selectable: false, evented: false });
+  const valueLabel = new fabric.Textbox('', { left: startPt.x + 10, top: startPt.y - 24, width: 140, fontSize: 16, fontWeight: 800, fill: '#FFFFFF', originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  const entityLabel = new fabric.Textbox(cfg.entity || '', { left: 0, top: -20, width: 200, fontSize: 12.5, fontWeight: 700, fill: color, charSpacing: 40, originX: 'left', originY: 'top', textAlign: 'left', selectable: false, evented: false, splitByGrapheme: false });
+  shapes.push(cursor, valueLabel, entityLabel);
+
+  const refShape = shapes[0];
+  const preGroupLeft = refShape.left, preGroupTop = refShape.top;
+  const group = new fabric.Group(shapes, { subTargetCheck: false });
+  const groupOffsetX = preGroupLeft - refShape.left, groupOffsetY = preGroupTop - refShape.top;
+  return { group, runtime: { cursor, valueLabel, src, pts, minV, maxV, w, h, groupOffsetX, groupOffsetY } };
+}
+function rebuildLineChart(obj, patch) {
+  const cfg = Object.assign({}, obj.data.temporalLine, patch);
+  const idx = canvas.getObjects().indexOf(obj);
+  const anim = obj.data.anim;
+  const { group: newObj, runtime } = buildLineChartGroup(cfg);
+  newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
+  newObj.set('name', obj.get('name'));
+  cfg._runtime = runtime;
+  newObj.data = { role: null, isCounter: false, anim, temporalLine: cfg };
+  canvas.remove(obj);
+  canvas.insertAt(idx, newObj);
+  canvas.setActiveObject(newObj);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(newObj);
+  updateScrubRange();
+}
+// Called as a second pass inside applyFrame(), same convention as applyMapTimeline().
+function applyLineChartTimeline(obj, elapsed) {
+  const cfg = obj.data.temporalLine;
+  const rt = cfg && cfg._runtime;
+  if (!rt || !rt.src || !rt.pts.length) return;
+  const dataTime = rt.src.videoTimeToDataTime(elapsed);
+  const result = rt.src.valueAt(cfg.entity, dataTime);
+  if (!result) return;
+  const frac = rt.src.dataEnd > rt.src.dataStart ? clamp01((dataTime - rt.src.dataStart) / (rt.src.dataEnd - rt.src.dataStart)) : 0;
+  const x = frac * rt.w;
+  const padV = (rt.maxV - rt.minV) * 0.15 || Math.abs(rt.maxV) * 0.1 || 1;
+  const y = rt.h - ((result.value - (rt.minV - padV)) / ((rt.maxV + padV) - (rt.minV - padV))) * rt.h;
+  const offX = rt.groupOffsetX || 0, offY = rt.groupOffsetY || 0;
+  // Observed (a real source row) vs interpolated (a smoothly-animated in-between state) are
+  // visually distinguished, not silently presented as the same thing — full opacity + a solid
+  // fill for an observed instant, a hollow/dimmer cursor while gliding between two real rows.
+  rt.cursor.set({ left: x - offX, top: y - offY, fill: result.observed ? '#FFFFFF' : 'transparent', opacity: result.observed ? 1 : 0.7 }); rt.cursor.setCoords();
+  rt.valueLabel.set({ left: x + 10 - offX, top: y - 24 - offY, text: formatTemporalValue(result.value, cfg.unit), opacity: result.observed ? 1 : 0.75 });
+  rt.valueLabel.setCoords();
+}
+function formatTemporalValue(v, unit) {
+  const rounded = Math.abs(v - Math.round(v)) < 0.01 ? Math.round(v) : Math.round(v * 10) / 10;
+  return rounded + (unit ? ' ' + unit : '');
+}
+
+/* ---- StatView: a temporal stat card — screen-space, reuses buildStatCard() (the SAME       */
+/* ---- visual system a Map Graphic's stat event uses) rather than a second implementation.   */
+/* ---- Deliberately its own layer, not fused into the map, per "TemporalDataSource -> MapView */
+/* ---- / LineView / StatView", not one monolithic PopulationMapWithGraphComponent.            */
+function buildTemporalStatGroup(cfg) {
+  const src = temporalSourceFor(cfg);
+  const anchor = { x: cfg.left || 0, y: cfg.top || 0 };
+  const built = buildStatCard({ label: cfg.label || cfg.entity, value: '', unit: cfg.unit, source: cfg.source, countUp: false }, anchor);
+  const group = new fabric.Group(built.shapes, { subTargetCheck: false });
+  return { group, runtime: Object.assign({ src }, built) };
+}
+function rebuildTemporalStat(obj, patch) {
+  const cfg = Object.assign({}, obj.data.temporalStat, patch);
+  const idx = canvas.getObjects().indexOf(obj);
+  const anim = obj.data.anim;
+  const { group: newObj, runtime } = buildTemporalStatGroup(cfg);
+  newObj.set({ left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY, angle: obj.angle, opacity: obj.opacity, originX: obj.originX, originY: obj.originY });
+  newObj.set('name', obj.get('name'));
+  cfg._runtime = runtime;
+  newObj.data = { role: null, isCounter: false, anim, temporalStat: cfg };
+  canvas.remove(obj);
+  canvas.insertAt(idx, newObj);
+  canvas.setActiveObject(newObj);
+  canvas.requestRenderAll();
+  refreshLayerList();
+  selectProps(newObj);
+  updateScrubRange();
+}
+function applyTemporalStatTimeline(obj, elapsed) {
+  const cfg = obj.data.temporalStat;
+  const rt = cfg && cfg._runtime;
+  if (!rt || !rt.src) return;
+  const dataTime = rt.src.videoTimeToDataTime(elapsed);
+  const result = rt.src.valueAt(cfg.entity, dataTime);
+  if (!result) return;
+  rt.valueText.set('text', formatTemporalValue(result.value, cfg.unit));
+}
 /* ---- Org/Family Tree: parses a plain indented-text outline (2 spaces = one level     ---- */
 /* ---- deeper) into a tree, lays it out with each parent centered above its children    ---- */
 /* ---- (classic leaf-counting layout — not the most compact possible, but simple and    ---- */
@@ -1685,6 +1899,35 @@ const TEMPLATES = {
       ];
     },
   },
+  // Benchmark: TEMPORAL LINKED VIEW (Phase 8/10) — Map, Line, and Stat each independently
+  // read the same TemporalDataSource (TEMPORAL_FIXTURES.fixtureIndex) across the same
+  // 1000-5000ms window, proving synchronization by construction rather than by wiring one
+  // component to another — see "Temporal data foundation" above. The map's job here is
+  // deliberately just "show which entity" (a plain highlight spanning the whole window, not a
+  // choropleth), per the phase spec's explicit "do not implement full choropleth yet" scoping.
+  // TEMPORAL_FIXTURES data is clearly-labeled test fixture data, not real statistics.
+  temporalLinkedView: {
+    label: 'Temporal: Map + Line + Stat (fixture data)',
+    category: 'Maps',
+    layers: () => {
+      const cx = W/2, rel = W/1920;
+      const mapScale = Math.min(W*0.32/600, H*0.28/650);
+      const mapTop = H*0.32;
+      const mapBottom = mapTop + 650*mapScale/2;
+      const chartW = Math.min(560, W*0.5), chartH = 170;
+      const chartTop = mapBottom + 50;
+      const statTop = chartTop + chartH + 60;
+      const windowStart = 1000, windowEnd = 5000;
+      return [
+        T('A CHANGING REGION — 2000 TO 2020 (TEST FIXTURE DATA)', { name:'Eyebrow', role:'body', fontWeight:700, fontSize:24, fill:COLORS.tealLight, left:cx, top:130, width:1600*rel, textAlign:'center', originX:'center', charSpacing:200, anim:{type:'fade',delay:300,duration:600} }),
+        M({ name:'Japan map', left:cx, top:mapTop, originX:'center', originY:'center', scope:'japan', scale:mapScale, anim:{type:'fade',delay:500,duration:800}, events:[
+          { type:'highlight', id:'e1', region:'Hokkaidō', color:COLORS.tealLight, start:200, duration:600, dim:true },
+        ] }),
+        LN({ name:'Hokkaidō trend line', left:cx - chartW/2, top:chartTop, originX:'left', originY:'top', sourceId:'fixtureIndex', entity:'Hokkaidō', color:COLORS.tealLight, unit:'idx', width:chartW, height:chartH, videoStart:windowStart, videoEnd:windowEnd, anim:{type:'fade',delay:700,duration:600} }),
+        TS({ name:'Hokkaidō index stat', left:cx - 104, top:statTop, originX:'left', originY:'top', sourceId:'fixtureIndex', entity:'Hokkaidō', label:'Hokkaidō index', unit:'idx', source:'Fixture test data — not a real statistic', videoStart:windowStart, videoEnd:windowEnd, anim:{type:'fade',delay:900,duration:600} }),
+      ];
+    },
+  },
 };
 
 /* ============ LAYER CREATION FROM SPEC ============ */
@@ -1731,6 +1974,18 @@ function specToObject(spec) {
     obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top', scaleX: spec.scale || 1, scaleY: spec.scale || 1 });
     mapCfg._runtime = built.runtime;
     mapCfg.baseTransform = { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY };
+  } else if (spec.kind === 'temporalLine') {
+    var temporalLineCfg = { sourceId: spec.sourceId, entity: spec.entity, color: spec.color, videoStart: spec.videoStart || 0, videoEnd: spec.videoEnd || 4000, width: spec.width, height: spec.height, unit: spec.unit };
+    const builtLine = buildLineChartGroup(temporalLineCfg);
+    obj = builtLine.group;
+    obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
+    temporalLineCfg._runtime = builtLine.runtime;
+  } else if (spec.kind === 'temporalStat') {
+    var temporalStatCfg = { sourceId: spec.sourceId, entity: spec.entity, label: spec.label, unit: spec.unit, source: spec.source, videoStart: spec.videoStart || 0, videoEnd: spec.videoEnd || 4000, left: 0, top: 0 };
+    const builtStat = buildTemporalStatGroup(temporalStatCfg);
+    obj = builtStat.group;
+    obj.set({ left: spec.left, top: spec.top, originX: spec.originX || 'left', originY: spec.originY || 'top' });
+    temporalStatCfg._runtime = builtStat.runtime;
   }
   obj.set('name', spec.name || spec.kind);
   obj.data = {
@@ -1749,6 +2004,12 @@ function specToObject(spec) {
   }
   if (spec.kind === 'map') {
     obj.data.map = mapCfg;
+  }
+  if (spec.kind === 'temporalLine') {
+    obj.data.temporalLine = temporalLineCfg;
+  }
+  if (spec.kind === 'temporalStat') {
+    obj.data.temporalStat = temporalStatCfg;
   }
   return obj;
 }
@@ -2428,6 +2689,10 @@ function computeContentEnd() {
     if (o.data.map && o.data.map.events && o.data.map.events.length) {
       o.data.map.events.forEach(e => { end = Math.max(end, o.data.anim.delay + e.start + e.duration); });
     }
+    // videoEnd is scene-global data time, NOT offset by the layer's own entrance delay — see
+    // the matching note beside applyLineChartTimeline/applyTemporalStatTimeline's callers.
+    if (o.data.temporalLine) end = Math.max(end, o.data.temporalLine.videoEnd);
+    if (o.data.temporalStat) end = Math.max(end, o.data.temporalStat.videoEnd);
   });
   return end + 300;
 }
@@ -2490,6 +2755,23 @@ function applyFrame(elapsed) {
     if (o === bgMediaObj || !o.data || !o.data.map) return;
     const delay = (o.data.anim && o.data.anim.delay) || 0;
     applyMapTimeline(o, elapsed - delay);
+  });
+  // Same second-pass convention for the two temporal-data layer kinds — each reads
+  // TemporalDataSource independently (see "Temporal data foundation" above). Deliberately
+  // NOT offset by each layer's own `data.anim.delay` the way applyMapTimeline's events are:
+  // a map's sub-events are relative to that ONE layer's own entrance because they only ever
+  // need to agree with themselves, but a temporal layer's videoStart/videoEnd is DATA time,
+  // shared across however many separate MapView/LineView/StatView layers a scene has — if
+  // each subtracted its own (possibly different) entrance delay first, two views with
+  // different fade-in timings would silently read different data-time windows at the same
+  // instant despite identical videoStart/videoEnd config. Passing raw `elapsed` to both keeps
+  // "current data time" a pure function of scene-global time, independent of any one view's
+  // own local entrance polish — which is what actually makes synchronization hold by
+  // construction rather than by the template author keeping delays in sync by convention.
+  canvas.getObjects().forEach(o => {
+    if (o === bgMediaObj || !o.data) return;
+    if (o.data.temporalLine) applyLineChartTimeline(o, elapsed);
+    if (o.data.temporalStat) applyTemporalStatTimeline(o, elapsed);
   });
   canvas.requestRenderAll();
 }

@@ -134,6 +134,18 @@ tests/test_v14.js             Playwright regression: Map Graphic's events-based 
                                same instant, and the geographic dataset registry resolving
                                mapRegionsFor()/an unknown scope's fallback/the scope-switch
                                buttons all through GEOGRAPHIC_DATASETS)
+tests/test_v15.js             Playwright regression: the TemporalDataSource foundation
+                               (video-time <-> data-time mapping is an exact inverse pair,
+                               exact source values at real observed years, a correctly
+                               interpolated + explicitly-not-observed value between two real
+                               rows, reverse/non-monotonic seeking reproducing a direct
+                               lookup), the Temporal Linked View benchmark's MapView/LineView/
+                               StatView agreeing at five different requested scene times and
+                               after a non-monotonic seek — the actual synchronization proof,
+                               not just the underlying math — the sequence settling on the
+                               final observed value at the end of playback, overflow-checked
+                               across all 3 aspect ratios, and save/load round-trip of both
+                               new layer kinds
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -416,6 +428,40 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   playback/scrub session (each call re-captures each object's *current* — possibly
   already-animated — properties as the new "base", corrupting later evaluations); it's called
   exactly once, from `startPlayback()` and `beginScrub()`.
+- **Temporal data foundation** (`createTemporalDataSource()`, `TEMPORAL_FIXTURES`,
+  `temporalSourceFor()`, `app.js`) maps VIDEO TIME (elapsed milliseconds, the same currency
+  every other animation in this file runs on) to DATA TIME (whatever unit a dataset's own time
+  field uses) and back, and distinguishes OBSERVED (an exact source row) from INTERPOLATED (a
+  smoothly-animated in-between state) — `valueAt(entity, dataTime)` returns `{value, time,
+  observed}`, never silently presenting an interpolated state as if it were real. This is a
+  reusable primitive, not a chart component: it knows nothing about maps, lines, or stat cards.
+  `TEMPORAL_FIXTURES.fixtureIndex` is clearly-labeled **test fixture data** (round synthetic
+  numbers, matching the exact example given in the phase spec this was built against) — not
+  real documentary statistics; a real scene would supply its own sourced records via the same
+  `{records, timeField, entityField, valueField}` shape. Two new layer kinds read from it:
+  `buildLineChartGroup()`/`applyLineChartTimeline()` (`data.temporalLine` — a first-version line
+  chart: baseline, full value line, a moving cursor, current value, min/max labels) and
+  `buildTemporalStatGroup()`/`applyTemporalStatTimeline()` (`data.temporalStat` — reuses
+  `buildStatCard()` directly, the *same* visual system a Map Graphic's stat event uses, per
+  "use the existing stat/event visual system where practical" rather than a second
+  implementation). A plain map `highlight` event (already existing, no new map code) plays the
+  MapView role for the first proof — "just show which entity," not a choropleth. These are
+  deliberately three independent layer types, not one `PopulationMapWithGraphComponent`: **the
+  synchronization proof is that they agree despite never referencing each other**, only the
+  same `{sourceId, videoStart, videoEnd}` config and the same `elapsed` — see
+  `tests/test_v15.js` #8/#9. **Critical gotcha already hit once**: a temporal layer's
+  `videoStart`/`videoEnd` is scene-global data time, and `applyFrame()`'s second pass for
+  `temporalLine`/`temporalStat` deliberately does NOT subtract each layer's own
+  `data.anim.delay` before evaluating it (unlike `applyMapTimeline`, which does subtract the
+  map's own delay for its *own* sub-events). Two sibling temporal views with different
+  entrance-fade delays would otherwise silently read *different* data-time windows at the same
+  instant despite identical `videoStart`/`videoEnd` config — this exact bug was caught by
+  `test_v15.js` #8 during development (LineView and StatView showed "94 idx" vs "95 idx" at the
+  same elapsed time until fixed). Deferred, per the phase spec's explicit scoping: rankings,
+  population pyramids, scatter/trails, flows, small multiples, narration/word-timing sync,
+  and any props-panel UI for editing these two new layer types beyond template-authored
+  starting points — this is the shared clock/data primitive those would eventually read from,
+  not any of those forms themselves.
 - **Custom font import** registers via the `FontFace` API (`registerCustomFont`) and is
   persisted into saved `.json` projects as base64 data URLs (`customFonts` array) so a
   reloaded project re-registers the same fonts before enlivening objects.
@@ -543,6 +589,19 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   control shape (e.g. a multi-line text area, a date picker for a future historical event)
   would still need a new branch added to `renderEventControl()` — the manifest removes the
   *per-event-type* duplication, not the need to ever add a new primitive control renderer.
+- **Temporal layer editor UI.** `data.temporalLine`/`data.temporalStat` (see "Temporal data
+  foundation" above) have no props-panel controls yet — they're template-authored only (see the
+  "Temporal: Map + Line + Stat" starter). A creator can't currently pick a different entity,
+  dataset, or time window without hand-editing the saved JSON. Building that UI is a smaller
+  lift than it sounds now that the control manifest exists (a `sourceId` select, an `entity`
+  select populated from `TemporalDataSource.entities()`, two `time` controls for the video
+  window) but was left out of this pass per the phase's own explicit scoping ("do not yet
+  build... a huge chart props panel") — the point of this pass was proving the
+  TemporalDataSource/MapView/LineView/StatView architecture, not shipping a data-bound
+  editing surface. Also deliberately not built, per that same scoping: bar-chart races,
+  population pyramids, scatter/trails, Sankey/flow diagrams, small multiples, real dataset
+  import (CSV/XLSX), and any automatic chart-type recommendation — `createTemporalDataSource()`
+  is the shared primitive those would eventually read from, not any of those forms themselves.
 
 ## Who this is for
 
