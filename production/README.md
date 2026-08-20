@@ -37,6 +37,20 @@ progress.js     Pure functions: beat status derivation, per-episode progress %, 
 util.js         Shared helpers: toast(), openModal()/closeModal(), escapeHtml(), debounce()
 integration.js  Cross-tool handoff — opens the Animation Maker / Auto Subtitles with beat
                 context, listens for the postMessage'd result, attaches it as an asset
+import_parse.js Pure text -> {episode,beats,sources,claims} parser for the BeLocal
+                production-document format. No DOM/File APIs — unit-testable in plain Node,
+                independent of how the source bytes were read (see "Import Production
+                Document" below).
+import_docx.js  Browser-only .docx -> block-list extraction: a ~100-line ZIP central-
+                directory reader + DecompressionStream('deflate-raw') to inflate, then a
+                DOMParser walk of word/document.xml. No vendored library — deliberately,
+                since both are small bounded problems and the browser already has what's
+                needed.
+import_pdf.js   Browser-only .pdf -> line-array extraction via vendored pdf.js.
+import.js       Ties the above together: picks the extractor by file extension, runs
+                import_parse.js, and writes the result into db.js as a new episode.
+vendor/         pdf.js (Mozilla, MIT), vendored the same way src/fabric.min.js and
+                subtitles/transformers.min.js are — see "Import Production Document" below.
 app.js          Router (hash-based) + global search + main-nav wiring
 view_episodes.js    Episodes list (home screen), + New Episode, Import stub
 view_dashboard.js   Episode dashboard: progress header, Next Actions, voiceover/subtitles,
@@ -96,15 +110,56 @@ changes.
 Language/quality selection in Auto Subtitles stays a manual, explicit choice in both flows —
 handoff only replaces the file-picking step, not the tool's own decisions.
 
+## Import Production Document
+
+Real, not a stub — built once real examples of the BeLocal production-document format
+(both the plain docx style and the newer "bracketed" style with `[OWN]`/`[GRAPHIC]`/`[SOURCE]`
+visual-type tags and a RESEARCH EVALUATION confidence section) were available to parse
+against. Episodes → Import Production Document accepts `.docx` or `.pdf`, entirely
+client-side — nothing is uploaded anywhere, matching the rest of this tool.
+
+**Field mapping**, from a document section to where it lands:
+
+| Document section | Goes to |
+|---|---|
+| `EPISODE NN` / title | `episode.number` / `episode.title` |
+| `THE VERDICT` | `episode.description`, and becomes Fact Lock claim `C01` |
+| `RUNTIME` | `episode.runtimeTarget` |
+| `3 THINGS TO KNOW`, `WHAT THIS EPISODE IS NOT`, `EDITORIAL GUARDRAILS`, `RECHECK` condition | `episode.productionNotes` (one combined reference block) |
+| Each beat's narration + visual/source cell | one `beat` per row/section — narration, `visualType` (from a `[BRACKET]` tag if present, else a keyword heuristic), `visualInstruction`, and an `EDIT CAUTION:` line if present → `beat.notes` |
+| `Source: S0N` in a beat | resolves against the parsed source list and sets `beat.sourceId` (first code if several are cited; the raw citation is kept in the beat's `visualInstruction` either way, so nothing is lost even when a beat cites more than one source) |
+| Numbered `Sources` list | one `Source` record each, code `S01`, `S02`, ... — a bare domain URL (no `https://`, as these docs write them) gets one added so it's clickable |
+| `RESEARCH EVALUATION` (when present): `HIGH CONFIDENCE` / `MODERATE BUT SUPPORTIVE` items | additional Fact Lock claims, status `VERIFIED` / `VERIFIED WITH QUALIFIER` |
+| `RESEARCH EVALUATION`: `REJECTED OVERCLAIM` items | folded into `productionNotes` as "do not say these" guardrails, not turned into claims — they describe what the script must *not* assert |
+| `Short-Form Cut` / `FINAL SPOKEN SCRIPT` | `episode.shortScript` |
+| `Publishing Copy` / `YOUTUBE DESCRIPTION` | `episode.masterCaption` |
+
+The parsing logic (`import_parse.js`) is pure — no DOM, no File APIs — so it's unit-tested
+directly against real block/line arrays, independent of the browser-only extraction
+(`import_docx.js`'s hand-rolled ZIP+XML reader, `import_pdf.js`'s vendored pdf.js). See
+`tests/test_production.js`'s import assertions for the end-to-end path against a synthetic
+fixture (`tests/fixtures/sample_production_doc.docx` — synthetic on purpose, so no real
+unpublished episode script ever needs to live in this public repo as test data).
+
+**Known limitations**, by design rather than oversight:
+- Parsing is best-effort and format-specific to this house style, not a general docx/PDF
+  importer — every field stays editable after import, and the preview modal shows exactly
+  what was found before anything is written, specifically so a bad parse is never silent.
+- A beat citing multiple sources (`Source: S01/S02`) only gets `beat.sourceId` set to the
+  first one — `db.js`'s beat model links one source per beat. The full citation text is
+  preserved in the beat's visual instruction either way.
+- A source URL that's hyphen-wrapped mid-string by the PDF's own line breaking can come out
+  truncated (the PDF text layer doesn't mark a hyphen as "this word continues on the next
+  line" vs. "this is a real hyphen") — rare, and the publisher/title fields are unaffected,
+  so it's a quick visible fix rather than silent data loss.
+- Re-importing the same file always creates a brand-new episode; it never merges into or
+  overwrites an existing one, so nothing hand-edited can be silently clobbered by a re-run.
+
 ## Deferred / future modules
 
 Intentionally not built yet, to avoid shipping something fragile or half-working. Each is
 designed to attach without redesigning what exists:
 
-- **DOCX production-document import** — the "Import Production Document" button on the
-  Episodes screen currently explains this isn't built yet rather than faking it. A real
-  parser would populate `createEpisode()`'s fields directly; nothing about the data model
-  needs to change to support it later.
 - **AI-assisted asset search/tagging** — `view_assets.js`'s "suggested tags" are a cheap,
   local, non-AI heuristic (splitting the filename), deliberately not dependent on an
   external AI API per the project brief. Conventional metadata search (filename/tags/

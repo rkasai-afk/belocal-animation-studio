@@ -9,7 +9,7 @@ const url = require('url');
 // Serving the whole repo root also lets it exercise the real cross-tool handoff with the
 // Animation Maker (../) and Auto Subtitles (../subtitles/) at their real relative URLs.
 function startServer(root) {
-  const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.wav': 'audio/wav', '.png': 'image/png', '.json': 'application/json' };
+  const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.wav': 'audio/wav', '.png': 'image/png', '.json': 'application/json' };
   const server = http.createServer((req, res) => {
     let p = decodeURIComponent(url.parse(req.url).pathname);
     if (p.endsWith('/')) p += 'index.html';
@@ -245,6 +245,39 @@ async function main() {
   await page.waitForTimeout(400);
   const afterCount = await page.$$eval('.asset-card', (els) => els.length);
   console.log('19. asset deleted after confirmation:', beforeCount, '->', afterCount, afterCount === beforeCount - 1 ? 'OK' : 'FAIL');
+
+  // --- 20. Import Production Document (.docx) — real ZIP+DOMParser extraction in-browser ---
+  await page.goto(`${baseUrl}#episodes`);
+  await page.waitForTimeout(300);
+  await page.click('#btnImport');
+  await page.setInputFiles('#imFile', path.resolve(__dirname, 'fixtures', 'sample_production_doc.docx'));
+  await page.waitForTimeout(600);
+  const previewText = await page.textContent('.source-box').catch(() => '');
+  console.log('20. docx import preview parsed episode:', previewText.includes('Vending Machine Coffee') ? 'OK' : 'FAIL', '|', previewText.replace(/\s+/g, ' ').slice(0, 160));
+  console.log('20b. docx import found 2 beats + 2 sources:', previewText.includes('2 story beats') && previewText.includes('2 sources') ? 'OK' : 'FAIL');
+  await page.screenshot({ path: path.join(outDir, '11_import_preview.png') });
+
+  await page.click('#ipCreate');
+  await page.waitForTimeout(500);
+  const importedOnDashboard = /#dashboard\//.test(page.url());
+  console.log('21. import created episode + navigated to dashboard:', importedOnDashboard ? 'OK' : 'FAIL');
+  const importedEpisodeId = page.url().split('#dashboard/')[1];
+  const importedHeader = await page.textContent('.dash-head h2');
+  console.log('22. imported episode header correct:', importedHeader.includes('EP99') && importedHeader.includes('Vending Machine Coffee') ? 'OK' : 'FAIL', '|', importedHeader);
+
+  await page.goto(`${baseUrl}#edit/${importedEpisodeId}`);
+  await page.waitForTimeout(400);
+  const importedBeatCount = await page.$$eval('.beat-card', (els) => els.length);
+  console.log('23. imported beats appear in Edit Blueprint:', importedBeatCount, importedBeatCount === 2 ? 'OK' : 'FAIL');
+  const firstBeatVisual = await page.textContent('.beat-card .source-box, .beat-card .asset-slot').catch(() => '');
+  const firstImportedSource = await page.textContent('.beat-card .source-box').catch(() => '(none)');
+  console.log('24. imported beat has source auto-linked from "Source: S01":', firstImportedSource.includes('Japan Vending Machine') ? 'OK' : 'FAIL', '|', firstImportedSource.replace(/\s+/g, ' ').slice(0, 100));
+
+  await page.goto(`${baseUrl}#factcheck/${importedEpisodeId}`);
+  await page.waitForTimeout(300);
+  const importedClaimText = await page.textContent('.claim-card').catch(() => '(none)');
+  console.log('25. imported THE VERDICT became a Fact Lock claim:', importedClaimText.includes('Vending machine coffee quality varies') ? 'OK' : 'FAIL');
+  await page.screenshot({ path: path.join(outDir, '12_imported_factcheck.png') });
 
   console.log('HAD ERROR:', hadError);
   await browser.close();

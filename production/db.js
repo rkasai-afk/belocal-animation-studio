@@ -120,6 +120,7 @@ export async function createEpisode(fields) {
     longScript: fields.longScript || '',
     shortScript: fields.shortScript || '',
     masterCaption: fields.masterCaption || '',
+    productionNotes: fields.productionNotes || '',
     lastFactCheckedDate: fields.lastFactCheckedDate || '',
     createdAt: Date.now(),
     updatedAt: Date.now(),
