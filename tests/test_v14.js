@@ -93,7 +93,14 @@ async function main() {
     const internalX = canvasPt.x * vpt[0] + vpt[4], internalY = canvasPt.y * vpt[3] + vpt[5];
     return { x: internalX, y: internalY, internalW: canvas.width, internalH: canvas.height };
   });
+  // Scroll the canvas fully into view before measuring its on-screen position — a prior
+  // click on a props-panel control (e.g. the scope-switch button above) can leave the page
+  // auto-scrolled by an amount that depends on total page height, not just that control's own
+  // position, which would otherwise make this computed click point drift (even off-screen)
+  // any time unrelated page content elsewhere changes height.
   const canvasBox = await page.$('canvas.upper-canvas');
+  await canvasBox.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(100);
   const box = await canvasBox.boundingBox();
   const cssX = box.x + kanagawaScreen.x * (box.width / kanagawaScreen.internalW);
   const cssY = box.y + kanagawaScreen.y * (box.height / kanagawaScreen.internalH);

@@ -146,6 +146,31 @@ tests/test_v15.js             Playwright regression: the TemporalDataSource foun
                                final observed value at the end of playback, overflow-checked
                                across all 3 aspect ratios, and save/load round-trip of both
                                new layer kinds
+tests/test_v16.js             Playwright regression: the Data Source Registry (CSV parsing
+                               incl. quoted fields, field-mapping validation, missing/non-
+                               numeric values skipped and never coerced to 0, duplicate entity+
+                               time detection, irregular-interval warnings, an unmapped-field
+                               error), the paste-CSV UI end to end (add source -> appears in
+                               the list -> offered on a temporalLine's Data source dropdown),
+                               entity switching on a user-pasted (not just fixture) source,
+                               TemporalDataSource correctness (boundary/midpoint/reverse-seek/
+                               out-of-range-never-zero) against a user-pasted source, the
+                               ContextTrack's Y-domain staying fixed across seeks (same data
+                               value always renders at the same pixel Y), number formatting
+                               (plain/compact/percentage), dataset-level provenance vs a
+                               layer's own instance source caption staying independent,
+                               overflow-checked across all 3 aspect ratios, the permanent
+                               "TEMPORAL MAP + CONTEXT LINE" benchmark (Hokkaidō/Okinawa's
+                               divergent trajectories, entity-change mid-sequence, backward
+                               seek, full play-through), a guard against the sample template
+                               ever being named after a specific dataset, full save/load
+                               fidelity of the data source registry + every temporalLine field
+                               INCLUDING actual post-reload playback (not just config-field
+                               equality — see the _runtime reconstruction note below), and the
+                               full 12-step creator workflow (add data source -> paste/import
+                               -> map fields -> add a map+line+stat temporal story -> select
+                               entity -> configure data range -> scrub and see them in sync ->
+                               save -> reload -> get the identical scene back)
 docs/Research_and_Architecture_Brief.md   Why Fabric.js, explainer-video technique notes
 docs/GITHUB_PAGES_SETUP.md    How this got deployed (GitHub Pages + custom subdomain via
                                MuuMuu DNS CNAME to `rkasai-afk.github.io`)
@@ -375,6 +400,40 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   regenerate-in-place pattern as Dot-Grid/Pin/Org-Chart above — switching scope resets
   `events` (prefecture and country names don't overlap), and dragging/resizing the whole group
   works like any other layer via `scaleX`/`scaleY`.
+- **Map rendering: vector-quality zoom.** Every shape `buildMapGroup()` builds (region
+  `fabric.Path`s, route line/dots/marker, stat card rect+text) is constructed with
+  `objectCaching: false`, as is the top-level `fabric.Group` itself — the one deliberate,
+  narrow exception to Fabric's default object caching anywhere in this app (every other layer
+  type keeps caching on). Root cause this was fixed for: Fabric's object cache renders an
+  object once into an offscreen bitmap sized for its *current* effective scale and reuses that
+  bitmap on later frames, but the cache is capped at a fixed total pixel budget
+  (`fabric.config.perfLimitSizeTotal`, 2^21 ≈ 2.1 effective megapixels) regardless of the
+  object's actual on-screen size — once camera zoom pushed a cached map object past that
+  budget, Fabric silently shrank the cache bitmap to fit and then *stretched* it to cover the
+  real (larger) on-screen area, producing visible pixel blocks with the underlying vector data
+  completely untouched. Confirmed empirically, not guessed: a zoomed map group's internal
+  `zoomX` (the scale its cache was actually rendered at, 2.39) diverged from its real `scaleX`
+  (the scale it was actually displayed at, 5.91) after a camera zoom, and the cache canvas
+  measured exactly 1467×1429px — `1467*1429 = 2,096,343`, matching `perfLimitSizeTotal`
+  (2,097,152) almost to the pixel. This is *not* insufficient canvas backing resolution,
+  missing retina scaling, CSS stretching, or raster geometry — the canvas backing store
+  already matches the project's real export resolution 1:1, and the map is real vector path
+  data the whole way through. Disabling caching on just this bounded set of map shapes (not
+  globally) is a deliberate, reasoned exception rather than "caching is bad": this whole group
+  is re-scaled every frame during any camera move (`applyCameraState()`), so a bitmap cache
+  was already being re-rendered almost every frame anyway — verified caching was buying near-
+  zero benefit here (an in-page A/B comparison during a real zoom sequence measured a *higher*
+  frame rate with caching off, 47.8fps vs 37.3fps, because building/invalidating an offscreen
+  cache canvas every frame costs more than drawing the shapes directly) while remaining a live
+  correctness hazard the rest of the time. Verified at the actual worst case in this app, not
+  just the small region that first surfaced the bug: a full manual 6x zoom (`MAX_CAMERA_ZOOM`)
+  on Hokkaidō — the largest Japan prefecture, ~7x Kanagawa's bounding box — settles with no
+  cache canvas existing on any map shape at all (`hasCacheCanvas: false` unconditionally,
+  regardless of zoom level or canvas backing-store size — re-verified with the canvas
+  resized to a hypothetical 3840×2160 backing store), which is what makes this a real
+  architectural guarantee rather than "happened to be under budget at 1920×1080 today." If you
+  add a new shape type to the map module (a new event type's own marker, say), give it
+  `objectCaching: false` too, for the same reason.
 - **Geographic dataset registry** (`GEOGRAPHIC_DATASETS`, `mapRegionsFor()`,
   `normalizeMapScope()`, `app.js`) replaced a hardcoded `scope === 'japan' ? ... : ...` ternary
   (duplicated in three places) as the one source of truth for which map datasets exist. A
@@ -458,10 +517,88 @@ tests/test_production.js      Playwright regression for Documentary Studio: epis
   instant despite identical `videoStart`/`videoEnd` config — this exact bug was caught by
   `test_v15.js` #8 during development (LineView and StatView showed "94 idx" vs "95 idx" at the
   same elapsed time until fixed). Deferred, per the phase spec's explicit scoping: rankings,
-  population pyramids, scatter/trails, flows, small multiples, narration/word-timing sync,
-  and any props-panel UI for editing these two new layer types beyond template-authored
-  starting points — this is the shared clock/data primitive those would eventually read from,
-  not any of those forms themselves.
+  population pyramids, scatter/trails, flows, small multiples, and narration/word-timing sync
+  — this is the shared clock/data primitive those would eventually read from, not any of those
+  forms themselves. A real props-panel UI for temporalLine/temporalStat (beyond template-
+  authored starting points) *does* now exist — see "Temporal Story Editor v1" below.
+- **Temporal Story Editor v1** — `dataSources` (a project-level registry, `let dataSources =
+  {}` alongside `customFonts`) plus a "Data Sources" panel let a creator paste their OWN CSV
+  data in, rather than being limited to `TEMPORAL_FIXTURES`'s test data. Deliberately NOT a
+  spreadsheet editor, a database, or a formula/join engine — one CSV paste, three field-mapping
+  choices (which column is time/entity/value), and optional unit/source/sourceURL, is the
+  entire authoring surface (`parseCSV`/`guessFields`/`validateAndBuildRecords`/
+  `addDataSourceFromForm`, `app.js`). `temporalSourceFor()` checks `TEMPORAL_FIXTURES` first,
+  then `dataSources` — both share the exact `{records, timeField, entityField, valueField}`
+  shape `createTemporalDataSource()` already expected, so no branch was needed for "which kind
+  of source," only a second place to look; `allTemporalSources()` is the merged list a
+  layer's "Data source" control picks from. **Validation never coerces a bad value to 0** — a
+  row with a missing/non-numeric time or value is skipped with a warning, not folded into the
+  dataset as a false observation (`validateAndBuildRecords`); duplicate entity+time rows and
+  irregular time intervals are flagged as warnings (informational, never block); an unmapped
+  field name is a hard error with nothing built. This is also the project's one documented
+  **missing ≠ zero** policy end to end: `TemporalDataSource.valueAt()` (see "Temporal data
+  foundation" above) already never fabricates a zero for a gap — it interpolates linearly
+  between the two nearest REAL rows for that entity, and clamps to the nearest real edge value
+  outside an entity's own observed range — a deliberate choice (smooth interpolation across
+  gaps, not a broken/dashed line) documented here rather than left implicit.
+  The props panel for `temporalLine`/`temporalStat` (`TEMPORAL_LINE_CONTROLS`/
+  `TEMPORAL_STAT_CONTROLS`, `renderTemporalLinePropsPanel`/`renderTemporalStatPropsPanel`)
+  extends the SAME declarative control-manifest architecture `MAP_EVENT_CONTROLS` already
+  established, not a second implementation of it — `renderEventControl`'s `select` type
+  gained an `optionsFor(target)` escape hatch (dynamic choices, e.g. "every registered data
+  source" or "that source's own entities") alongside its original static `options` array, and
+  its `time` type gained a `timeKind` flag (`'point'` vs `'duration'`) since Data Range's
+  `videoStart`/`videoEnd` are absolute video moments (can legitimately be 0), not entrance-
+  animation durations (floored at 100ms) — the old `key === 'start' ? ... : ...` inference
+  would have wrongly treated `videoStart` as a duration. `renderEventControlsForType()` is now
+  a one-line wrapper over the newly-extracted `renderControlList(container, controls, target,
+  commit, scope)`, which walks ANY control array against ANY target object — the map event
+  editor and the temporal props panels are two callers of the same function, not parallel
+  implementations. **Data Range vs Animation Duration** are deliberately kept visually and
+  conceptually separate: Data Range (`videoStart`/`videoEnd`) is when this layer sweeps through
+  its DATA; the generic entrance delay/duration further down the same panel (every layer gets
+  it) is just this layer's own fade/pop-in — a `renderTemporalDataRangeNote()` explainer sits
+  between them in the panel rather than merging the two into one set of fields. The scrubber
+  additionally shows a **Data Time** readout (`#scrubDataTime`, `updateScrubDataTimeReadout()`)
+  next to its existing Video Time seconds, but only while scrubbing AND a temporalLine/
+  temporalStat layer is selected — `scrubReferenceObj` captures the selection at
+  `beginScrub()` time specifically because `setInteractive(false)` (which every scrub/Preview
+  already calls) discards the canvas's active-object selection for the duration, so there
+  would otherwise be nothing left to read from once a frame actually renders. Minimal **number
+  formatting** (`formatTemporalValue(v, unit, opts)`, `opts: {compact, percentage}`) covers
+  exactly what the phase asked for and no more — no manual precision picker, matching this
+  project's "keep the props panel plain" ethos (see "Who this is for" below) — `compact`
+  abbreviates >=1000 as `12.4K`/`3.2M`, `percentage` appends `%` instead of a unit; the default
+  (neither flag) keeps the existing round-to-1-decimal behavior unchanged. **Dataset-level
+  provenance vs per-instance visible source** are two separate fields, matching the same
+  pattern the map's stat event already established (see "Geographic dataset registry" above's
+  neighbor, `MAP_EVENT_DEFAULTS.stat`): a `dataSources` entry's own `source`/`sourceUrl` is the
+  dataset's canonical citation, while a `temporalLine`/`temporalStat` layer's own `source`/
+  `sourceUrl` fields are that ONE INSTANCE's visible caption — changing one never touches the
+  other (`tests/test_v16.js` #17). The permanent **"TEMPORAL MAP + CONTEXT LINE" benchmark**
+  (`tests/test_v16.js` #21-23) deliberately reuses the existing `temporalLinkedView` template
+  rather than adding a near-duplicate second one — `TEMPORAL_FIXTURES.fixtureIndex` already has
+  two divergent entities (Hokkaidō declining 100->82, Okinawa rising 100->118) with 5
+  observations each, which already satisfies the benchmark's own data requirements; the test
+  adds the entity-change-mid-sequence and backward-seek exercises the fixture alone doesn't
+  prove. **Critical gotcha fixed this pass, affecting every "regenerate-in-place" layer kind,
+  not just the two temporal ones**: a JSON round-trip through `JSON.stringify`/`JSON.parse`
+  necessarily drops each such layer's live `_runtime` (Fabric object references, JS `Map`
+  instances like a map's `regionPaths`, a `TemporalDataSource`'s own functions — none of which
+  survive `JSON.stringify`), but every field each one is BUILT FROM (`scope`/`events`,
+  `total`/`highlight`, `sourceId`/`entity`/`videoStart`/`videoEnd`, ...) survives the round
+  trip intact. Before this fix, a reloaded project's map/dot-grid/pin/org-chart/temporal layer
+  would silently carry a broken `_runtime` (e.g. `regionPaths` deserializing to a plain `{}`
+  instead of a `Map`) that only surfaced as a crash — `regionPaths.forEach is not a function` —
+  the FIRST time Preview/scrub touched it, not at load time itself. The project-load handler
+  now calls each kind's own `rebuild*(obj, {})` once per affected object right after
+  `enlivenObjects()` (before `canvas.requestRenderAll()`), which reconstructs `_runtime` fresh
+  from the surviving config — the exact same function each layer's props-panel edits already
+  use interactively, just invoked once on load rather than on a field change. Confirmed by
+  `tests/test_v16.js` #26/#28, which actually PLAY a reloaded project (not just diff its
+  config fields) — the gap this specifically targets was proven to exist first (a full
+  map+line+stat scene threw immediately post-reload before this fix landed), not just guessed
+  at from reading the code.
 - **Custom font import** registers via the `FontFace` API (`registerCustomFont`) and is
   persisted into saved `.json` projects as base64 data URLs (`customFonts` array) so a
   reloaded project re-registers the same fonts before enlivening objects.
@@ -589,19 +726,19 @@ Flagged to the user already as not-yet-built, in case they come back to them:
   control shape (e.g. a multi-line text area, a date picker for a future historical event)
   would still need a new branch added to `renderEventControl()` — the manifest removes the
   *per-event-type* duplication, not the need to ever add a new primitive control renderer.
-- **Temporal layer editor UI.** `data.temporalLine`/`data.temporalStat` (see "Temporal data
-  foundation" above) have no props-panel controls yet — they're template-authored only (see the
-  "Temporal: Map + Line + Stat" starter). A creator can't currently pick a different entity,
-  dataset, or time window without hand-editing the saved JSON. Building that UI is a smaller
-  lift than it sounds now that the control manifest exists (a `sourceId` select, an `entity`
-  select populated from `TemporalDataSource.entities()`, two `time` controls for the video
-  window) but was left out of this pass per the phase's own explicit scoping ("do not yet
-  build... a huge chart props panel") — the point of this pass was proving the
-  TemporalDataSource/MapView/LineView/StatView architecture, not shipping a data-bound
-  editing surface. Also deliberately not built, per that same scoping: bar-chart races,
-  population pyramids, scatter/trails, Sankey/flow diagrams, small multiples, real dataset
-  import (CSV/XLSX), and any automatic chart-type recommendation — `createTemporalDataSource()`
-  is the shared primitive those would eventually read from, not any of those forms themselves.
+- **Temporal layer editor UI** now exists (see "Temporal Story Editor v1" above) — a creator
+  can pick a different data source, entity, and Data Range from the props panel, and paste
+  their own CSV via the Data Sources panel, with no hand-editing of saved JSON required. Still
+  deliberately not built, per the phase's own explicit scoping: bar-chart races, population
+  pyramids, scatter/trails, Sankey/flow diagrams, small multiples, real spreadsheet-file import
+  (XLSX/Google Sheets — CSV paste *is* built), automatic web/Statistics-Bureau data retrieval,
+  and any automatic chart-type recommendation — `createTemporalDataSource()` and the
+  `dataSources` registry are the shared primitives those would eventually read from, not any of
+  those forms themselves. Also not built: full multi-line comparison (today's "multi-entity
+  support" is entity SWITCHING — one entity at a time per layer, changeable — not several
+  entities plotted on one chart at once), and a manual precision/decimal-places picker for
+  number formatting (`compact`/`percentage` toggles exist; the default stays the automatic
+  round-to-1-decimal behavior, per "keep the props panel plain" below).
 
 ## Who this is for
 

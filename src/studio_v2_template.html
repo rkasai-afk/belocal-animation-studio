@@ -157,6 +157,7 @@ input[type=range] { width:100%; }
       <label style="margin:0; white-space:nowrap; flex:0 0 auto;">Scrub timeline</label>
       <input type="range" id="timelineScrub" min="0" max="1000" value="0" style="flex:1;">
       <span id="scrubTime" style="font-size:12px;color:var(--text-gray);min-width:44px;text-align:right;flex:0 0 auto;">0.0s</span>
+      <span id="scrubDataTime" style="font-size:12px;color:var(--text-gray);flex:0 0 auto;"></span>
     </div>
     <div class="status" id="status">Loading…</div>
     <div class="hint-strip">
@@ -217,6 +218,8 @@ input[type=range] { width:100%; }
         <button class="small" id="addPin">+ Map Pin</button>
         <button class="small" id="addOrgChart">+ Family Tree</button>
         <button class="small" id="addMap">+ Map Graphic</button>
+        <button class="small" id="addTemporalLine">+ Temporal Line</button>
+        <button class="small" id="addTemporalStat">+ Temporal Stat</button>
       </div>
       <div id="layerList"></div>
     </div>
@@ -224,6 +227,13 @@ input[type=range] { width:100%; }
     <div class="card" id="propsCard" style="display:none;">
       <h2>Selected layer</h2>
       <div id="propsBody"></div>
+    </div>
+
+    <div class="card" id="dataSourcesCard">
+      <h2>Data sources <span style="font-weight:400;text-transform:none;color:var(--text-gray);font-size:11px;">for Temporal Line / Stat / Map layers</span></h2>
+      <div id="dataSourceList" style="margin-bottom:8px;"></div>
+      <button type="button" class="small" id="btnAddDataSource" style="width:100%;">+ Add data source</button>
+      <div id="dataSourceForm" style="display:none; margin-top:10px;"></div>
     </div>
 
     <div class="card">
